@@ -4,6 +4,7 @@ Backend API only — frontend is served separately on Vercel.
 CORS allows the Vercel frontend domain.
 """
 from contextlib import asynccontextmanager
+import json
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
@@ -36,7 +37,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         lifespan=_lifespan,
-        redirect_slashes=False,          # ← prevents ALL 308 redirects
+        redirect_slashes=False,          # ← prevents ALL 308 redirects globally
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -48,13 +49,25 @@ def create_app() -> FastAPI:
     return app
 
 
-def _register_cors(app: FastAPI, origins: list[str]) -> None:
+def _register_cors(app: FastAPI, origins: list[str] | str) -> None:
+    # Safely parse origins if passed as a string/JSON array from environment
+    if isinstance(origins, str):
+        try:
+            parsed_origins = json.loads(origins)
+            if isinstance(parsed_origins, list):
+                origins = parsed_origins
+            else:
+                origins = [o.strip() for o in origins.split(",") if o.strip()]
+        except json.JSONDecodeError:
+            origins = [o.strip() for o in origins.split(",") if o.strip()]
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
 
 

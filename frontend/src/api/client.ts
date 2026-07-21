@@ -5,14 +5,11 @@
  *   - Eliminates all env var misconfiguration issues
  *   - Works on Vercel without any environment variable setup
  *   - Works in local dev (CORS is handled by the backend)
- *
- * Local dev: the Vite proxy in vite.config.ts is kept for convenience
- * but this file bypasses it by using the absolute URL directly.
  */
 import axios, { AxiosError } from 'axios';
 import type { ApiError } from '@/types';
 
-// Always call the Render backend directly — no env vars, no proxies, no confusion
+// Ensure double slashes in https:// so Axios never treats it as a relative path
 const BACKEND_URL = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1';
 
 export const apiClient = axios.create({
