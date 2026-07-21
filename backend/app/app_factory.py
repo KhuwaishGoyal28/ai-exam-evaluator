@@ -1,7 +1,7 @@
 """
 FastAPI application factory.
 Backend API only — frontend is served separately on Vercel.
-CORS allows the Vercel frontend domain.
+CORS allows all Vercel deployment domains and configured origins.
 """
 from contextlib import asynccontextmanager
 import json
@@ -37,7 +37,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         lifespan=_lifespan,
-        redirect_slashes=False,          # ← prevents ALL 308 redirects globally
+        redirect_slashes=False,          # Prevents 308 redirects from stripping CORS headers
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -61,11 +61,17 @@ def _register_cors(app: FastAPI, origins: list[str] | str) -> None:
         except json.JSONDecodeError:
             origins = [o.strip() for o in origins.split(",") if o.strip()]
 
+    # Fallback default if origins list is empty
+    if not origins:
+        origins = ["*"]
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
+        # Matches any *.vercel.app domain (including preview deployments)
+        allow_origin_regex=r"https://.*\.vercel\.app",
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
