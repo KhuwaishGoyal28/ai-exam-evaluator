@@ -20,7 +20,7 @@ const SENTIMENT_DOT: Record<Sentiment, string> = {
   negative: 'bg-rose-400',
 };
 
-export function Badge({ label, sentiment, variant = 'soft', className }: BadgeProps) {
+export function Badge({ label, sentiment, className }: BadgeProps) {
   const cls = sentiment
     ? SENTIMENT_SOFT[sentiment]
     : 'bg-surface-100 text-surface-600 border border-surface-200';
