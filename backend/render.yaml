@@ -1,28 +1,25 @@
 services:
   - type: web
-    name: evalpro
+    name: evalpro-api
     runtime: python
     region: oregon
     plan: free
 
-    # build.sh: installs Python deps + Node deps + builds React + copies dist/ → static/
-    buildCommand: chmod +x build.sh && bash build.sh
-
-    # FastAPI serves both API (/api/v1/*) and React SPA (/*) from one process
+    # Backend only — no Node/frontend build here.
+    # Frontend is deployed separately on Vercel.
+    buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
 
     envVars:
-      # ── App ────────────────────────────────────────────────────────
       - key: DEBUG
         value: "true"
       - key: APP_NAME
-        value: "EvalPro"
+        value: "EvalPro API"
       - key: ALLOWED_ORIGINS
-        value: '["https://ai-exam-evaluator-nine.vercel.app","https://ai-exam-evaluator-chb7.onrender.com","http://localhost:5173"]'
+        value: '["https://ai-exam-evaluator-nine.vercel.app","http://localhost:5173"]'
 
-      # ── Groq (evaluation LLM) ──────────────────────────────────────
       - key: GROQ_API_KEY
-        sync: false          # ← set manually as Secret in Render dashboard
+        sync: false
       - key: GROQ_MODEL
         value: "openai/gpt-oss-120b"
       - key: GROQ_MAX_TOKENS
@@ -30,22 +27,19 @@ services:
       - key: GROQ_TEMPERATURE
         value: "0.2"
 
-      # ── OpenAI (vision / OCR) ──────────────────────────────────────
       - key: OPENAI_API_KEY
-        sync: false          # ← set manually as Secret in Render dashboard
+        sync: false
       - key: OPENAI_VISION_MODEL
         value: "gpt-4o-mini"
       - key: OPENAI_MAX_TOKENS
         value: "8192"
 
-      # ── Supabase Storage ───────────────────────────────────────────
       - key: SUPABASE_URL
-        sync: false          # ← set manually as Secret in Render dashboard
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false          # ← set manually as Secret in Render dashboard
+        sync: false
       - key: SUPABASE_BUCKET
         value: "answercheck"
 
-      # ── Upload ─────────────────────────────────────────────────────
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"
