@@ -1,25 +1,30 @@
 services:
   - type: web
-    name: evalpro-api
+    name: evalpro
     runtime: python
     region: oregon
     plan: free
-    buildCommand: pip install -r requirements.txt
+
+    # build.sh: installs Python deps + Node deps + builds React + copies dist/ → static/
+    buildCommand: chmod +x build.sh && bash build.sh
+
+    # FastAPI serves both API (/api/v1/*) and React SPA (/*) from one process
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
 
     envVars:
-      # ── App ──────────────────────────────────────────────────────
+      # ── App ────────────────────────────────────────────────────────
       - key: DEBUG
         value: "false"
       - key: APP_NAME
-        value: "EvalPro API"
+        value: "EvalPro"
+      # When frontend is served from the same origin, CORS origins = same URL
+      # Set this to your actual Render URL after first deploy
       - key: ALLOWED_ORIGINS
-        value: '["https://your-frontend.vercel.app"]'   # update after Vercel deploy
+        value: '["https://evalpro.onrender.com"]'
 
-      # ── Groq (evaluation LLM) ─────────────────────────────────────
-      # Set GROQ_API_KEY manually as a Secret in the Render dashboard
+      # ── Groq (evaluation LLM) ──────────────────────────────────────
       - key: GROQ_API_KEY
-        sync: false
+        sync: false          # ← set manually as Secret in Render dashboard
       - key: GROQ_MODEL
         value: "openai/gpt-oss-120b"
       - key: GROQ_MAX_TOKENS
@@ -27,24 +32,22 @@ services:
       - key: GROQ_TEMPERATURE
         value: "0.2"
 
-      # ── OpenAI (vision / OCR) ─────────────────────────────────────
-      # Set OPENAI_API_KEY manually as a Secret in the Render dashboard
+      # ── OpenAI (vision / OCR) ──────────────────────────────────────
       - key: OPENAI_API_KEY
-        sync: false
+        sync: false          # ← set manually as Secret in Render dashboard
       - key: OPENAI_VISION_MODEL
         value: "gpt-4o-mini"
       - key: OPENAI_MAX_TOKENS
         value: "8192"
 
-      # ── Supabase Storage ──────────────────────────────────────────
-      # Set both as Secrets in the Render dashboard
+      # ── Supabase Storage ───────────────────────────────────────────
       - key: SUPABASE_URL
-        sync: false
+        sync: false          # ← set manually as Secret in Render dashboard
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
+        sync: false          # ← set manually as Secret in Render dashboard
       - key: SUPABASE_BUCKET
         value: "answercheck"
 
-      # ── Upload ────────────────────────────────────────────────────
+      # ── Upload ─────────────────────────────────────────────────────
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"

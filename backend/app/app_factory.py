@@ -1,15 +1,14 @@
 """
 FastAPI application factory.
-Single responsibility: create and configure the FastAPI app instance.
-
-Startup sequence:
-  1. App object is created with default (empty) settings — always succeeds.
-  2. On first request (lifespan), validate_secrets() is called.
-     If secrets are missing, the server logs a clear actionable message and exits.
+Serves both the REST API (/api/v1/*) and the React SPA (/*) from one process.
+The React build is copied to backend/static/ during the Render build step.
 """
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.api.v1.routes import api_router
@@ -17,17 +16,17 @@ from app.middleware.exception_handlers import EXCEPTION_HANDLERS
 
 logger = get_logger(__name__)
 
+# Path to the React build output (copied here during build.sh)
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    """Validate required secrets on startup before accepting any requests."""
     settings = get_settings()
     try:
         settings.validate_secrets()
         logger.info("startup_ok", app=settings.app_name, version=settings.app_version)
     except RuntimeError as exc:
-        # Print the full formatted message, then hard-exit so the process
-        # doesn't silently serve 500s with missing credentials.
         import sys
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -36,8 +35,6 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    """Create, configure, and return the FastAPI application."""
-    # Read settings for app metadata — secrets not validated yet.
     settings = get_settings()
     configure_logging(debug=settings.debug)
 
@@ -45,18 +42,20 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         lifespan=_lifespan,
-        docs_url="/docs",   # always available for local dev
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.debug else None,
+        redoc_url="/redoc" if settings.debug else None,
     )
 
     _register_cors(app, settings.allowed_origins)
-    _register_routes(app)
+    _register_api_routes(app)
+    _register_static_frontend(app)
     _register_exception_handlers(app)
 
     return app
 
 
 def _register_cors(app: FastAPI, origins: list[str]) -> None:
+    """CORS only needed if frontend and backend are on different domains."""
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -66,8 +65,35 @@ def _register_cors(app: FastAPI, origins: list[str]) -> None:
     )
 
 
-def _register_routes(app: FastAPI) -> None:
+def _register_api_routes(app: FastAPI) -> None:
     app.include_router(api_router, prefix="/api/v1")
+
+
+def _register_static_frontend(app: FastAPI) -> None:
+    """
+    Serve the React SPA from /static directory.
+    - All /assets/* files are served directly (JS, CSS, images).
+    - Every other path returns index.html so React Router handles routing.
+    If the static dir doesn't exist (local dev), this is silently skipped —
+    the Vite dev server handles the frontend instead.
+    """
+    if not _STATIC_DIR.exists():
+        logger.info("static_dir_missing", path=str(_STATIC_DIR), note="frontend served by Vite in dev")
+        return
+
+    # Mount /assets so hashed JS/CSS files are served with correct MIME types
+    assets_dir = _STATIC_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    # SPA catch-all: any non-API path returns index.html
+    index_html = _STATIC_DIR / "index.html"
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str) -> FileResponse:
+        return FileResponse(str(index_html))
+
+    logger.info("static_frontend_mounted", path=str(_STATIC_DIR))
 
 
 def _register_exception_handlers(app: FastAPI) -> None:
