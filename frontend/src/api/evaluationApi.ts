@@ -1,7 +1,8 @@
 import type { EvaluateResponse } from '@/types';
 import { apiClient } from './client';
 
-const API_ENDPOINT = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1/evaluate';
+// Define the full absolute endpoint URL explicitly
+const EVALUATE_URL = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1/evaluate';
 
 export async function submitAnswerForEvaluation(
   file: File,
@@ -15,8 +16,8 @@ export async function submitAnswerForEvaluation(
     form.append('question', question.trim());
   }
 
-  // Passing full absolute URL directly to avoid baseURL prefixing
-  const response = await apiClient.post<EvaluateResponse>(API_ENDPOINT, form);
+  // Pass full absolute URL explicitly to override any relative pathing
+  const response = await apiClient.post<EvaluateResponse>(EVALUATE_URL, form);
 
   return response.data;
 }
