@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" font-family="Inter, system-ui, sans-serif" font-size="13">
+
+  <!-- Background -->
+  <rect width="900" height="620" fill="#f8f9fa" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" font-size="18" font-weight="700" fill="#1a1a2e">AnswerCheck — Data Flow Architecture</text>
+
+  <!-- ─── FRONTEND BOX ─── -->
+  <rect x="30" y="65" width="200" height="120" rx="10" fill="#dce6ff" stroke="#3b5bdb" stroke-width="1.5"/>
+  <text x="130" y="88" text-anchor="middle" font-weight="600" fill="#2541a8">Frontend</text>
+  <text x="130" y="107" text-anchor="middle" fill="#444" font-size="11">React + Vite + TS</text>
+  <text x="130" y="125" text-anchor="middle" fill="#555" font-size="11">1. DropZone (upload)</text>
+  <text x="130" y="142" text-anchor="middle" fill="#555" font-size="11">2. QuestionInput</text>
+  <text x="130" y="159" text-anchor="middle" fill="#555" font-size="11">3. ResultsPage</text>
+
+  <!-- Arrow: Frontend → Backend -->
+  <line x1="230" y1="125" x2="315" y2="125" stroke="#3b5bdb" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="272" y="117" text-anchor="middle" fill="#3b5bdb" font-size="10">POST /evaluate</text>
+  <text x="272" y="133" text-anchor="middle" fill="#3b5bdb" font-size="10">multipart/form-data</text>
+
+  <!-- ─── FASTAPI BOX ─── -->
+  <rect x="315" y="65" width="210" height="490" rx="10" fill="#fff9db" stroke="#e67700" stroke-width="1.5"/>
+  <text x="420" y="88" text-anchor="middle" font-weight="600" fill="#b35a00">Backend — FastAPI</text>
+  <text x="420" y="105" text-anchor="middle" fill="#888" font-size="11">Layer stack (no circular deps)</text>
+
+  <!-- Route -->
+  <rect x="330" y="112" width="180" height="34" rx="6" fill="#fff3bf" stroke="#e67700" stroke-width="1"/>
+  <text x="420" y="128" text-anchor="middle" fill="#7c4600" font-size="11" font-weight="600">Route /evaluate</text>
+  <text x="420" y="142" text-anchor="middle" fill="#7c4600" font-size="10">validate → UploadedFile</text>
+
+  <!-- Arrow down -->
+  <line x1="420" y1="146" x2="420" y2="162" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- Controller -->
+  <rect x="330" y="162" width="180" height="28" rx="6" fill="#ffe8cc" stroke="#e67700" stroke-width="1"/>
+  <text x="420" y="181" text-anchor="middle" fill="#7c4600" font-size="11" font-weight="600">Controller</text>
+
+  <!-- Arrow down -->
+  <line x1="420" y1="190" x2="420" y2="206" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- OCR Service -->
+  <rect x="330" y="206" width="180" height="60" rx="6" fill="#d3f9d8" stroke="#2f9e44" stroke-width="1"/>
+  <text x="420" y="224" text-anchor="middle" fill="#1a5c2a" font-size="11" font-weight="600">1. OCR Pipeline</text>
+  <text x="420" y="240" text-anchor="middle" fill="#2a6e38" font-size="10">pdf_converter</text>
+  <text x="420" y="254" text-anchor="middle" fill="#2a6e38" font-size="10">vision_client → confidence</text>
+
+  <!-- Arrow down -->
+  <line x1="420" y1="266" x2="420" y2="282" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- Eval Service -->
+  <rect x="330" y="282" width="180" height="60" rx="6" fill="#e0c3fc" stroke="#7048e8" stroke-width="1"/>
+  <text x="420" y="300" text-anchor="middle" fill="#44197a" font-size="11" font-weight="600">2. Evaluation Pipeline</text>
+  <text x="420" y="316" text-anchor="middle" fill="#5a2e96" font-size="10">prompt_builder</text>
+  <text x="420" y="330" text-anchor="middle" fill="#5a2e96" font-size="10">llm_client → result_mapper</text>
+
+  <!-- Arrow down -->
+  <line x1="420" y1="342" x2="420" y2="358" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- Annotation Service -->
+  <rect x="330" y="358" width="180" height="60" rx="6" fill="#ffd8a8" stroke="#d9480f" stroke-width="1"/>
+  <text x="420" y="376" text-anchor="middle" fill="#7c2d12" font-size="11" font-weight="600">3. Annotation Pipeline</text>
+  <text x="420" y="392" text-anchor="middle" fill="#9a3412" font-size="10">paragraph_locator</text>
+  <text x="420" y="406" text-anchor="middle" fill="#9a3412" font-size="10">comment_renderer + banner</text>
+
+  <!-- Arrow down -->
+  <line x1="420" y1="418" x2="420" y2="434" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- Storage -->
+  <rect x="330" y="434" width="180" height="40" rx="6" fill="#c5f6fa" stroke="#0c8599" stroke-width="1"/>
+  <text x="420" y="452" text-anchor="middle" fill="#0b3d47" font-size="11" font-weight="600">4. Storage Service</text>
+  <text x="420" y="466" text-anchor="middle" fill="#0b4d5c" font-size="10">store original + annotated</text>
+
+  <!-- Arrow down to response -->
+  <line x1="420" y1="474" x2="420" y2="494" stroke="#e67700" stroke-width="1.5" marker-end="url(#arr-o)"/>
+
+  <!-- Response -->
+  <rect x="330" y="494" width="180" height="40" rx="6" fill="#fff9db" stroke="#e67700" stroke-width="1"/>
+  <text x="420" y="512" text-anchor="middle" fill="#7c4600" font-size="11" font-weight="600">EvaluateResponse JSON</text>
+  <text x="420" y="526" text-anchor="middle" fill="#9a5700" font-size="10">scores + urls + text + comments</text>
+
+  <!-- Arrow back to frontend -->
+  <path d="M315 514 C 260 514 260 160 230 155" stroke="#3b5bdb" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+
+  <!-- ─── OPENAI BOX ─── -->
+  <rect x="600" y="190" width="170" height="100" rx="10" fill="#e7f5ff" stroke="#1971c2" stroke-width="1.5"/>
+  <text x="685" y="212" text-anchor="middle" font-weight="600" fill="#1864ab">OpenAI API</text>
+  <text x="685" y="232" text-anchor="middle" fill="#1971c2" font-size="11">GPT-4o-mini Vision</text>
+  <text x="685" y="248" text-anchor="middle" fill="#888" font-size="10">→ OCR (image → text)</text>
+  <text x="685" y="268" text-anchor="middle" fill="#1971c2" font-size="11">GPT-4o-mini Chat</text>
+  <text x="685" y="284" text-anchor="middle" fill="#888" font-size="10">→ Rubric eval (JSON mode)</text>
+
+  <!-- Arrow: OCR → OpenAI -->
+  <line x1="510" y1="236" x2="598" y2="236" stroke="#2f9e44" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-g)"/>
+  <!-- Arrow: Eval → OpenAI -->
+  <line x1="510" y1="312" x2="598" y2="268" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-p)"/>
+
+  <!-- ─── CLOUDINARY BOX ─── -->
+  <rect x="600" y="410" width="170" height="80" rx="10" fill="#e6fcf5" stroke="#087f5b" stroke-width="1.5"/>
+  <text x="685" y="432" text-anchor="middle" font-weight="600" fill="#087f5b">Cloudinary</text>
+  <text x="685" y="452" text-anchor="middle" fill="#095c43" font-size="11">Free tier · CDN-backed</text>
+  <text x="685" y="470" text-anchor="middle" fill="#888" font-size="10">original + annotated files</text>
+
+  <!-- Arrow: Storage → Cloudinary -->
+  <line x1="510" y1="454" x2="598" y2="454" stroke="#0c8599" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr-c)"/>
+
+  <!-- ─── LEGEND ─── -->
+  <rect x="30" y="540" width="560" height="62" rx="8" fill="#fff" stroke="#dee2e6" stroke-width="1"/>
+  <text x="50" y="558" font-size="11" font-weight="600" fill="#555">Legend</text>
+  <line x1="50" y1="572" x2="90" y2="572" stroke="#3b5bdb" stroke-width="1.5"/>
+  <text x="96" y="576" font-size="11" fill="#555">HTTP request/response</text>
+  <line x1="220" y1="572" x2="260" y2="572" stroke="#2f9e44" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="266" y="576" font-size="11" fill="#555">OCR call</text>
+  <line x1="350" y1="572" x2="390" y2="572" stroke="#7048e8" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="396" y="576" font-size="11" fill="#555">Eval call</text>
+  <line x1="460" y1="572" x2="500" y2="572" stroke="#0c8599" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="506" y="576" font-size="11" fill="#555">Storage call</text>
+  <text x="50" y="594" font-size="10" fill="#888">All service layers are strictly one-directional: routes → controllers → services → core/utils. No circular imports.</text>
+
+  <!-- ─── ARROW MARKERS ─── -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#3b5bdb"/>
+    </marker>
+    <marker id="arr-o" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#e67700"/>
+    </marker>
+    <marker id="arr-g" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#2f9e44"/>
+    </marker>
+    <marker id="arr-p" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7048e8"/>
+    </marker>
+    <marker id="arr-c" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#0c8599"/>
+    </marker>
+  </defs>
+</svg>

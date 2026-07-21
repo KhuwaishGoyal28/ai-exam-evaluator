@@ -1,0 +1,112 @@
+/* ─────────────────────────────────────────────────────
+   global.css  —  @import must come FIRST before @tailwind
+   ───────────────────────────────────────────────────── */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    line-height: 1.65;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-violet-500 ring-offset-2;
+  }
+
+  img, video { max-width: 100%; display: block; }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { border-radius: 9999px; background: #e2e8f0; }
+  ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+
+  ::selection { background: #ddd6fe; color: #3b0764; }
+}
+
+@layer components {
+  /* ── Consistent container padding on every device ── */
+  .container-pad {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  /* ── Frosted glass ── */
+  .glass {
+    background: rgba(255, 255, 255, 0.80);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    @apply border border-white/40;
+  }
+
+  /* ── Cards ── */
+  .card {
+    @apply rounded-2xl border border-slate-100 bg-white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+  }
+  .card-hover {
+    @apply card transition-all duration-300;
+  }
+  .card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08), 0 16px 40px rgba(0,0,0,0.06);
+  }
+
+  /* ── Text gradients ── */
+  .text-grad-primary {
+    @apply bg-gradient-to-r from-violet-500 to-cyan-500 bg-clip-text text-transparent;
+  }
+  .text-grad-hero {
+    @apply bg-gradient-to-r from-violet-300 via-cyan-200 to-teal-300 bg-clip-text text-transparent;
+  }
+
+  /* ── Score ring SVG track ── */
+  .score-ring-track {
+    transition: stroke-dashoffset 1.4s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+  .text-pretty  { text-wrap: pretty; }
+
+  /* Staggered entry animations */
+  .anim-in    { animation: fadeUp 0.4s cubic-bezier(0.16,1,0.3,1) both; }
+  .delay-1    { animation-delay:  80ms; }
+  .delay-2    { animation-delay: 160ms; }
+  .delay-3    { animation-delay: 240ms; }
+  .delay-4    { animation-delay: 320ms; }
+  .delay-5    { animation-delay: 400ms; }
+
+  /* Shimmer skeleton */
+  .shimmer {
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.8s linear infinite;
+  }
+
+  /* Hero dot grid */
+  .dot-grid {
+    background-image: radial-gradient(rgba(255,255,255,0.10) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  /* Two-line clamp */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}

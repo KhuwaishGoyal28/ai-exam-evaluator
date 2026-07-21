@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: answercheck-api
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DEBUG
+        value: "false"
+      - key: OPENAI_API_KEY
+        sync: false        # set manually in Render dashboard
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_VISION_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_MAX_TOKENS
+        value: "2048"
+      - key: OPENAI_TEMPERATURE
+        value: "0.2"
+      - key: SUPABASE_URL
+        sync: false        # set manually in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false        # set manually in Render dashboard
+      - key: SUPABASE_BUCKET
+        value: answercheck
+      - key: MAX_UPLOAD_SIZE_MB
+        value: "10"
+      - key: ALLOWED_ORIGINS
+        value: '["https://your-frontend.vercel.app"]'

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Frontend
+node_modules/
+dist/
+.env.local
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Uploads (never commit user data)
+backend/uploads/
+
+# Temp scripts (may contain credentials)
+backend/create_bucket.py
+backend/test_*.py
+backend/verify.py
+backend/check_imports.py
+backend/list_models.py
