@@ -14,13 +14,11 @@ services:
     envVars:
       # ── App ────────────────────────────────────────────────────────
       - key: DEBUG
-        value: "false"
+        value: "true"
       - key: APP_NAME
         value: "EvalPro"
-      # When frontend is served from the same origin, CORS origins = same URL
-      # Set this to your actual Render URL after first deploy
       - key: ALLOWED_ORIGINS
-        value: '["https://evalpro.onrender.com"]'
+        value: '["https://ai-exam-evaluator-chb7.onrender.com","https://your-frontend.vercel.app"]'
 
       # ── Groq (evaluation LLM) ──────────────────────────────────────
       - key: GROQ_API_KEY

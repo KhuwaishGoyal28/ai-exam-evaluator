@@ -71,26 +71,45 @@ def _register_api_routes(app: FastAPI) -> None:
 
 def _register_static_frontend(app: FastAPI) -> None:
     """
-    Serve the React SPA from /static directory.
-    - All /assets/* files are served directly (JS, CSS, images).
-    - Every other path returns index.html so React Router handles routing.
-    If the static dir doesn't exist (local dev), this is silently skipped —
-    the Vite dev server handles the frontend instead.
+    Serve the React SPA from backend/static/.
+
+    Routing priority (FastAPI matches top-to-bottom):
+      1. /api/v1/* → handled by the API router (registered first)
+      2. /assets/* → StaticFiles mount (JS, CSS, images with hashed names)
+      3. /*         → index.html catch-all for React Router (GET only,
+                       and explicitly skips /api/ paths so POSTs are never blocked)
+
+    If static/ doesn't exist (local dev) this is a no-op — Vite handles the frontend.
     """
     if not _STATIC_DIR.exists():
-        logger.info("static_dir_missing", path=str(_STATIC_DIR), note="frontend served by Vite in dev")
+        logger.info(
+            "static_dir_missing",
+            path=str(_STATIC_DIR),
+            note="frontend served by Vite in dev",
+        )
         return
 
-    # Mount /assets so hashed JS/CSS files are served with correct MIME types
+    # Serve hashed /assets/* files (JS bundles, CSS, images)
     assets_dir = _STATIC_DIR / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    # SPA catch-all: any non-API path returns index.html
+    # Serve other static root files (favicon, robots.txt, etc.)
     index_html = _STATIC_DIR / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_spa(full_path: str) -> FileResponse:
+        """
+        SPA catch-all — returns index.html for every non-API GET request
+        so React Router can handle client-side navigation.
+
+        Explicitly passes through /api/ paths so this handler never
+        intercepts API calls (which would cause 405 on POST requests).
+        """
+        # Let /api/* routes fall through to the actual API router
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="API route not found")
         return FileResponse(str(index_html))
 
     logger.info("static_frontend_mounted", path=str(_STATIC_DIR))
