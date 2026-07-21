@@ -1,6 +1,9 @@
 /**
  * Evaluation API — builds the FormData payload and POSTs to /evaluate.
- * exam_type is sent as a form field so the backend picks the right rubric.
+ *
+ * IMPORTANT: Do NOT manually set Content-Type header for multipart/form-data.
+ * Axios must set it automatically so it includes the correct `boundary` value.
+ * Without the boundary, the server cannot parse the form fields.
  */
 import type { EvaluateResponse } from '@/types';
 import { apiClient } from './client';
@@ -17,9 +20,8 @@ export async function submitAnswerForEvaluation(
     form.append('question', question.trim());
   }
 
-  const response = await apiClient.post<EvaluateResponse>('/evaluate', form, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  });
+  // No Content-Type header — axios sets it automatically with the correct boundary
+  const response = await apiClient.post<EvaluateResponse>('/evaluate', form);
 
   return response.data;
 }

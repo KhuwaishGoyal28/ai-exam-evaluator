@@ -1,35 +1,19 @@
 /**
- * Axios instance with correct base URL resolution.
+ * Axios instance.
  *
- * Priority:
- *   1. VITE_API_BASE_URL env var (must be a full URL like https://...onrender.com/api/v1)
- *   2. /api/v1 relative path — works locally because Vite proxies /api → :8000
+ * Base URL strategy:
+ *   - Always use '/api/v1' (relative path).
+ *   - On Vercel: vercel.json rewrites /api/v1/* → https://render-backend/api/v1/*
+ *   - In local dev: Vite vite.config.ts proxies /api → http://localhost:8000
  *
- * The _resolveBaseUrl() function ensures we never accidentally create a
- * relative URL when the env var contains a full https:// address.
+ * This means NO environment variable is needed — routing is handled
+ * at the infrastructure level (Vercel rewrites / Vite proxy).
  */
 import axios, { AxiosError } from 'axios';
 import type { ApiError } from '@/types';
 
-function resolveBaseUrl(): string {
-  const envUrl = import.meta.env.VITE_API_BASE_URL;
-
-  // No env var set → local dev, use Vite proxy
-  if (!envUrl) return '/api/v1';
-
-  // If it already starts with http:// or https:// → use as-is
-  if (envUrl.startsWith('http://') || envUrl.startsWith('https://')) {
-    return envUrl;
-  }
-
-  // Anything else (malformed, relative) → fall back to local proxy
-  return '/api/v1';
-}
-
-const BASE_URL = resolveBaseUrl();
-
 export const apiClient = axios.create({
-  baseURL: BASE_URL,
+  baseURL: '/api/v1',
   timeout: 120_000,
 });
 
