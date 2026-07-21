@@ -17,7 +17,7 @@ export default defineConfig({
     proxy: {
       // In local dev, proxy /api calls to the FastAPI backend
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'https://ai-exam-evaluator-chb7.onrender.com',
         changeOrigin: true,
       },
     },
