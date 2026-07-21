@@ -16,7 +16,7 @@ services:
       - key: APP_NAME
         value: "EvalPro API"
       - key: ALLOWED_ORIGINS
-        value: '["https://ai-exam-evaluator-nine.vercel.app","http://localhost:5173"]'
+        value: '["https://ai-exam-evaluator-lilac.vercel.app/","http://localhost:5173"]'
 
       - key: GROQ_API_KEY
         sync: false

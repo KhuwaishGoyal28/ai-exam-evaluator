@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = [
         "http://localhost:5173",
         "http://localhost:3000",
-        "https://ai-exam-evaluator-nine.vercel.app",
+        "https://ai-exam-evaluator-lilac.vercel.app/",
         "https://ai-exam-evaluator-chb7.onrender.com",
     ]
 
