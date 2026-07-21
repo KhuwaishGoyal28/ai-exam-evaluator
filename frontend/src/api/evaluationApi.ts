@@ -1,11 +1,7 @@
-/**
- * Evaluation API — builds the FormData payload and POSTs to /evaluate.
- *
- * IMPORTANT: Do NOT manually set Content-Type header for multipart/form-data.
- * Axios sets it automatically with the correct `boundary` parameter.
- */
 import type { EvaluateResponse } from '@/types';
 import { apiClient } from './client';
+
+const API_ENDPOINT = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1/evaluate';
 
 export async function submitAnswerForEvaluation(
   file: File,
@@ -19,8 +15,8 @@ export async function submitAnswerForEvaluation(
     form.append('question', question.trim());
   }
 
-  // Calls https://ai-exam-evaluator-chb7.onrender.com/api/v1/evaluate
-  const response = await apiClient.post<EvaluateResponse>('/evaluate', form);
+  // Passing full absolute URL directly to avoid baseURL prefixing
+  const response = await apiClient.post<EvaluateResponse>(API_ENDPOINT, form);
 
   return response.data;
 }
