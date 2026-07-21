@@ -11,20 +11,15 @@ from app.core.constants import ExamType
 from app.config import get_settings
 from app.core.logging import get_logger
 
-router = APIRouter()
+router = APIRouter(redirect_slashes=False)
 logger = get_logger(__name__)
 
-
-@router.post(
-    "/evaluate",
-    response_model=EvaluateResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def evaluate_answer(
-    file: UploadFile = File(...),
-    question: str | None = Form(default=None),
-    exam_type: str = Form(default="Custom / General"),
+async def _handle_evaluate(
+    file: UploadFile,
+    question: str | None,
+    exam_type: str,
 ) -> EvaluateResponse:
+    """Shared handler used by both /evaluate and /evaluate/ routes."""
     settings = get_settings()
     raw_bytes = await file.read()
 
@@ -35,7 +30,7 @@ async def evaluate_answer(
     try:
         exam_type_enum = ExamType(exam_type)
     except ValueError:
-        exam_type_enum = ExamType.UPSC
+        exam_type_enum = ExamType.CUSTOM
 
     uploaded_file = UploadedFile(
         filename=file.filename or "upload",
@@ -46,3 +41,14 @@ async def evaluate_answer(
     )
 
     return await process_answer_submission(uploaded_file, question, exam_type_enum)
+
+
+# Register both with AND without trailing slash — eliminates all 308 redirects
+@router.post("/evaluate", response_model=EvaluateResponse, status_code=status.HTTP_200_OK)
+@router.post("/evaluate/", response_model=EvaluateResponse, status_code=status.HTTP_200_OK, include_in_schema=False)
+async def evaluate_answer(
+    file: UploadFile = File(...),
+    question: str | None = Form(default=None),
+    exam_type: str = Form(default="Custom / General"),
+) -> EvaluateResponse:
+    return await _handle_evaluate(file, question, exam_type)
