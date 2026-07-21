@@ -21,7 +21,12 @@ class Settings(BaseSettings):
     app_name: str = "AnswerCheck API"
     app_version: str = "1.0.0"
     debug: bool = False
-    allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://ai-exam-evaluator-nine.vercel.app",
+        "https://ai-exam-evaluator-chb7.onrender.com",
+    ]
 
     # ── Groq (text evaluation) ────────────────────────────────────────────────
     groq_api_key: str = ""
