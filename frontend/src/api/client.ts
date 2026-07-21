@@ -9,7 +9,7 @@
 import axios, { AxiosError } from 'axios';
 import type { ApiError } from '@/types';
 
-// Ensure double slashes in https:// so Axios never treats it as a relative path
+// Must have double slashes after https: so Axios knows it is an absolute origin
 const BACKEND_URL = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1';
 
 export const apiClient = axios.create({
