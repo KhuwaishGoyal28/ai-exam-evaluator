@@ -1,31 +1,50 @@
 services:
   - type: web
-    name: answercheck-api
+    name: evalpro-api
     runtime: python
     region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
     envVars:
+      # ── App ──────────────────────────────────────────────────────
       - key: DEBUG
         value: "false"
-      - key: OPENAI_API_KEY
-        sync: false        # set manually in Render dashboard
-      - key: OPENAI_MODEL
-        value: gpt-4o-mini
-      - key: OPENAI_VISION_MODEL
-        value: gpt-4o-mini
-      - key: OPENAI_MAX_TOKENS
-        value: "2048"
-      - key: OPENAI_TEMPERATURE
+      - key: APP_NAME
+        value: "EvalPro API"
+      - key: ALLOWED_ORIGINS
+        value: '["https://your-frontend.vercel.app"]'   # update after Vercel deploy
+
+      # ── Groq (evaluation LLM) ─────────────────────────────────────
+      # Set GROQ_API_KEY manually as a Secret in the Render dashboard
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: "openai/gpt-oss-120b"
+      - key: GROQ_MAX_TOKENS
+        value: "1500"
+      - key: GROQ_TEMPERATURE
         value: "0.2"
+
+      # ── OpenAI (vision / OCR) ─────────────────────────────────────
+      # Set OPENAI_API_KEY manually as a Secret in the Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_VISION_MODEL
+        value: "gpt-4o-mini"
+      - key: OPENAI_MAX_TOKENS
+        value: "8192"
+
+      # ── Supabase Storage ──────────────────────────────────────────
+      # Set both as Secrets in the Render dashboard
       - key: SUPABASE_URL
-        sync: false        # set manually in Render dashboard
+        sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false        # set manually in Render dashboard
+        sync: false
       - key: SUPABASE_BUCKET
-        value: answercheck
+        value: "answercheck"
+
+      # ── Upload ────────────────────────────────────────────────────
       - key: MAX_UPLOAD_SIZE_MB
         value: "10"
-      - key: ALLOWED_ORIGINS
-        value: '["https://your-frontend.vercel.app"]'
