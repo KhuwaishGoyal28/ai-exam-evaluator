@@ -18,7 +18,7 @@ services:
       - key: APP_NAME
         value: "EvalPro"
       - key: ALLOWED_ORIGINS
-        value: '["https://ai-exam-evaluator-chb7.onrender.com","https://your-frontend.vercel.app"]'
+        value: '["https://ai-exam-evaluator-chb7.onrender.com","https://ai-exam-evaluator-git-main-khuwaishgoyal28s-projects.vercel.app","https://ai-exam-evaluator-khuwaishgoyal28s-projects.vercel.app","http://localhost:5173"]'
 
       # ── Groq (evaluation LLM) ──────────────────────────────────────
       - key: GROQ_API_KEY
