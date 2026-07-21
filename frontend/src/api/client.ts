@@ -1,19 +1,22 @@
 /**
- * Axios instance.
+ * Axios instance — hardcoded Render backend URL.
  *
- * Base URL strategy:
- *   - Always use '/api/v1' (relative path).
- *   - On Vercel: vercel.json rewrites /api/v1/* → https://render-backend/api/v1/*
- *   - In local dev: Vite vite.config.ts proxies /api → http://localhost:8000
+ * Using a hardcoded absolute URL is the most reliable approach:
+ *   - Eliminates all env var misconfiguration issues
+ *   - Works on Vercel without any environment variable setup
+ *   - Works in local dev (CORS is handled by the backend)
  *
- * This means NO environment variable is needed — routing is handled
- * at the infrastructure level (Vercel rewrites / Vite proxy).
+ * Local dev: the Vite proxy in vite.config.ts is kept for convenience
+ * but this file bypasses it by using the absolute URL directly.
  */
 import axios, { AxiosError } from 'axios';
 import type { ApiError } from '@/types';
 
+// Always call the Render backend directly — no env vars, no proxies, no confusion
+const BACKEND_URL = 'https://ai-exam-evaluator-chb7.onrender.com/api/v1';
+
 export const apiClient = axios.create({
-  baseURL: '/api/v1',
+  baseURL: BACKEND_URL,
   timeout: 120_000,
 });
 
