@@ -1,5 +1,5 @@
 /**
- * Evaluation API — builds the FormData payload and POSTs to /evaluate/.
+ * Evaluation API — builds the FormData payload and POSTs to /evaluate.
  *
  * IMPORTANT: Do NOT manually set Content-Type header for multipart/form-data.
  * Axios must set it automatically so it includes the correct `boundary` value.
@@ -20,8 +20,9 @@ export async function submitAnswerForEvaluation(
     form.append('question', question.trim());
   }
 
-  // ✅ ADDED TRAILING SLASH TO MATCH FASTAPI ROUTE
-  const response = await apiClient.post<EvaluateResponse>('/evaluate/', form);
+  // ❌ WAS: '/evaluate/' (triggered 308 redirect)
+  // ✅ FIX: Match Swagger route directly without trailing slash
+  const response = await apiClient.post<EvaluateResponse>('/evaluate', form);
 
   return response.data;
 }
