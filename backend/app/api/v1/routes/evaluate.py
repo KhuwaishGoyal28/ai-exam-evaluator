@@ -19,13 +19,11 @@ logger = get_logger(__name__)
     "/evaluate",
     response_model=EvaluateResponse,
     status_code=status.HTTP_200_OK,
-    summary="Submit an answer sheet for OCR + AI evaluation",
-    description="Upload a JPEG/PNG/WebP image or PDF. Returns OCR text, rubric scores, annotated image.",
 )
 async def evaluate_answer(
-    file: UploadFile = File(..., description="Image (JPEG/PNG/WebP) or PDF of the answer"),
-    question: str | None = Form(default=None, description="Exam question or topic"),
-    exam_type: str = Form(default="UPSC Mains", description="Exam type for rubric context"),
+    file: UploadFile = File(...),
+    question: str | None = Form(default=None),
+    exam_type: str = Form(default="Custom / General"),
 ) -> EvaluateResponse:
     settings = get_settings()
     raw_bytes = await file.read()
