@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Groq Vision — OCR for images and scanned PDFs
     groq_vision_model: str = "qwen/qwen3.6-27b"    # vision-capable model on Groq
-    groq_vision_max_tokens: int = 1024              # keep output small to save TPM budget
+    groq_vision_max_tokens: int = 700               # JSON output ~500-600 tokens; headroom for safety
 
     # ── OpenAI (optional — only used if groq_vision_model is unavailable) ────
     # Set OPENAI_API_KEY in .env to re-enable OpenAI as the OCR backend.

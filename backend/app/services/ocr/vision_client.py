@@ -36,9 +36,10 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 _GROQ_BASE_URL      = "https://api.groq.com/openai/v1"
-_PAGE_DELAY_SECONDS = 8      # wait between pages to respect 8k TPM
-_MAX_IMAGE_WIDTH    = 800    # px — keeps tokens low while text stays legible
-_JPEG_QUALITY       = 60     # enough for OCR; saves ~40% tokens vs quality 90
+_PAGE_DELAY_SECONDS = 4      # seconds between pages — enough gap for 8k TPM budget
+_MAX_IMAGE_WIDTH    = 640    # px — smaller = fewer tokens, still readable for OCR
+_JPEG_QUALITY       = 50     # lower quality = ~30% fewer tokens; text still legible
+_MAX_PAGES          = 8      # hard cap — prevents runaway timeouts on large uploads
 
 
 # ── Master System Prompt ──────────────────────────────────────────────────────
@@ -191,48 +192,82 @@ async def run_vision_evaluation(
     """
     Evaluate all pages of a handwritten answer sheet.
 
-    Sends each page individually to Groq Vision (one call per page,
-    8-second delay between calls to respect the 8k TPM free-tier limit).
-
-    Returns a merged master-schema dict.
+    Strategy:
+    - Page 1 is always processed first (full scoring + annotations)
+    - Remaining pages are processed in parallel batches of 2
+      with a 5-second gap between batches to respect 8k TPM
+    - Hard cap at _MAX_PAGES pages to prevent timeouts
     """
     if not page_images:
         raise OCRExtractionError("No page images provided for vision evaluation.")
 
+    # Cap pages to avoid runaway timeouts on large uploads
+    if len(page_images) > _MAX_PAGES:
+        logger.warning("page_cap_applied",
+                       original=len(page_images), cap=_MAX_PAGES)
+        page_images = page_images[:_MAX_PAGES]
+
     total_pages = len(page_images)
-    merged: dict = {}
 
-    for page_num, img_bytes in enumerate(page_images):
-        if page_num > 0:
-            logger.info("vision_page_delay", page=page_num + 1,
-                        wait_s=_PAGE_DELAY_SECONDS)
+    # ── Page 1: full scoring ──────────────────────────────────────────────
+    merged = await _evaluate_single_page(
+        img_bytes=page_images[0],
+        page_num=0,
+        total_pages=total_pages,
+        question=question,
+        exam_type=exam_type,
+    )
+    logger.info("vision_page_done", page=1,
+                marks=merged.get("total_marks", "?"))
+    if "page_annotations" not in merged:
+        merged["page_annotations"] = []
+
+    # ── Remaining pages: parallel in batches of 2 ────────────────────────
+    remaining = list(range(1, total_pages))
+    _BATCH = 2
+
+    for batch_start in range(0, len(remaining), _BATCH):
+        batch_indices = remaining[batch_start: batch_start + _BATCH]
+
+        # Delay between batches (not before first batch of remaining)
+        if batch_start > 0:
+            logger.info("vision_batch_delay", wait_s=_PAGE_DELAY_SECONDS)
             await asyncio.sleep(_PAGE_DELAY_SECONDS)
-
-        page_result = await _evaluate_single_page(
-            img_bytes=img_bytes,
-            page_num=page_num,
-            total_pages=total_pages,
-            question=question,
-            exam_type=exam_type,
-        )
-        logger.info("vision_page_done", page=page_num + 1,
-                    marks=page_result.get("total_marks", "?"))
-
-        if page_num == 0:
-            merged = page_result
-            if "annotations" not in merged:
-                merged["annotations"] = []
         else:
-            # Merge additional page annotations
-            extra = page_result.get("annotations", [])
-            merged["annotations"].extend(extra)
+            # Small gap after page 1
+            await asyncio.sleep(2)
+
+        tasks = [
+            _evaluate_single_page(
+                img_bytes=page_images[i],
+                page_num=i,
+                total_pages=total_pages,
+                question=question,
+                exam_type=exam_type,
+            )
+            for i in batch_indices
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, result in zip(batch_indices, results):
+            if isinstance(result, Exception):
+                logger.error("vision_page_failed", page=i + 1, error=str(result))
+                continue
+            logger.info("vision_page_done", page=i + 1)
+
+            # Merge annotations
+            extra = result.get("page_annotations", []) or result.get("annotations", [])
+            merged.setdefault("page_annotations", [])
+            merged["page_annotations"].extend(extra)
+            merged.setdefault("annotations", [])
+            merged["annotations"].extend(result.get("annotations", []))
 
             # Append transcribed text
-            extra_text = page_result.get("transcribed_text", "").strip()
+            extra_text = result.get("transcribed_text", "").strip()
             if extra_text:
                 existing = merged.get("transcribed_text", "")
                 merged["transcribed_text"] = (
-                    f"{existing}\n\n--- PAGE {page_num + 1} ---\n\n{extra_text}"
+                    f"{existing}\n\n--- PAGE {i + 1} ---\n\n{extra_text}"
                 )
 
     merged["total_pages"] = total_pages
