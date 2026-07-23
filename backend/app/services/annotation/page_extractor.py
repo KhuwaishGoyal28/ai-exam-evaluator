@@ -64,16 +64,20 @@ def _extract_pdf_pages(pdf_bytes: bytes) -> list[Image.Image]:
 def _page_to_image(page, page_num: int) -> Image.Image:
     """
     Convert one pypdf page to a PIL Image.
-    Tries embedded images first; falls back to a text canvas.
+    Tries embedded images first (scanned/handwritten PDFs); falls back to a
+    text canvas only for genuine text-based PDF pages.
     """
     img = _try_embedded_image(page)
     if img is not None:
         logger.info("page_from_image", page=page_num)
         return img.convert("RGB")
 
-    # Text-based page — render the text onto a canvas
+    # Text-based page — render the extracted text onto a canvas
     text = (page.extract_text() or "").strip()
-    logger.info("page_from_text", page=page_num, chars=len(text))
+    if text:
+        logger.info("page_from_text", page=page_num, chars=len(text))
+    else:
+        logger.info("page_from_blank", page=page_num)
     return _text_to_canvas(text, page_num)
 
 

@@ -31,7 +31,7 @@ from reportlab.platypus import (
 )
 
 if TYPE_CHECKING:
-    from app.models.responses.evaluate import EvaluateResponse
+    from app.models.responses.evaluate import EvaluateResponse, EssayParameterScoreOut
 
 from app.core.logging import get_logger
 
@@ -76,7 +76,8 @@ def build_pdf_report(
     )
 
     styles = _build_styles()
-    story  = _build_story(response, question, exam_type, styles)
+    is_essay = bool(response.evaluation.essay_parameter_scores)
+    story  = _build_story(response, question, exam_type, styles, is_essay=is_essay)
 
     doc.build(
         story,
@@ -91,7 +92,7 @@ def build_pdf_report(
 
 # ── Story builder ─────────────────────────────────────────────────────────────
 
-def _build_story(response, question, exam_type, styles) -> list:
+def _build_story(response, question, exam_type, styles, is_essay: bool = False) -> list:
     ev    = response.evaluation
     story = []
 
@@ -102,7 +103,13 @@ def _build_story(response, question, exam_type, styles) -> list:
     story.append(PageBreak())
 
     # ── Page 2: parameter breakdown + strengths/improvements ───────────────
-    story += _build_parameter_table(ev.parameter_scores, styles)
+    if is_essay:
+        story += _build_essay_parameter_table(ev.essay_parameter_scores, styles)
+        if ev.before_resubmit:
+            story += _build_resubmit_section(ev.before_resubmit, styles)
+    else:
+        story += _build_parameter_table(ev.parameter_scores, styles)
+
     if ev.strengths:
         story += _build_bullet_section("Strengths", ev.strengths, _C_SUCCESS, styles)
     if ev.improvements:
@@ -309,6 +316,88 @@ def _build_bullet_section(title: str, items: list[str], colour, styles) -> list:
     ]
     return KeepTogether([
         Paragraph(title, styles["section_heading"]),
+        Spacer(1, 2 * mm),
+        *bullets,
+        Spacer(1, 5 * mm),
+    ]),
+
+
+def _build_essay_parameter_table(essay_scores, styles) -> list:
+    """Table of all 12 essay rubric parameters with score, max, remark."""
+    rows = [[
+        Paragraph("<b>Parameter</b>",        styles["table_header"]),
+        Paragraph("<b>Max</b>",              styles["table_header"]),
+        Paragraph("<b>Score</b>",            styles["table_header"]),
+        Paragraph("<b>Examiner's Remark</b>", styles["table_header"]),
+    ]]
+
+    col_w = W - 2 * MARGIN
+    for eps in essay_scores:
+        pct   = eps.score / eps.max_score if eps.max_score else 0
+        bar_c = _C_SUCCESS if pct >= 0.75 else (_C_WARNING if pct >= 0.5 else _C_DANGER)
+        rows.append([
+            Paragraph(f"<b>{eps.parameter}</b>", styles["table_cell"]),
+            Paragraph(str(eps.max_score),         styles["table_cell"]),
+            Paragraph(
+                f'<font size="12" color="{bar_c.hexval()}"><b>{eps.score}</b></font>',
+                styles["table_cell"],
+            ),
+            Paragraph(eps.examiner_remark, styles["table_cell_small"]),
+        ])
+        if eps.suggestions:
+            rows.append([
+                Paragraph("", styles["table_cell"]),
+                Paragraph("", styles["table_cell"]),
+                Paragraph("", styles["table_cell"]),
+                Paragraph(
+                    f'<font color="#7c3aed" size="7">💡  {eps.suggestions[0]}</font>',
+                    styles["table_cell_small"],
+                ),
+            ])
+
+    tbl = Table(
+        rows,
+        colWidths=[col_w * 0.32, col_w * 0.06, col_w * 0.10, col_w * 0.52],
+        repeatRows=1,
+    )
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), _C_PRIMARY),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), _C_WHITE),
+        ("FONTSIZE",      (0, 0), (-1, 0), 9),
+        ("TOPPADDING",    (0, 0), (-1, 0), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_C_WHITE, colors.HexColor("#f8fafc")]),
+        ("GRID",          (0, 0), (-1, -1), 0.4, _C_BORDER),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING",    (0, 1), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 5),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+    ]))
+
+    return [
+        Paragraph("Essay Parameter Breakdown", styles["section_heading"]),
+        Spacer(1, 2 * mm),
+        tbl,
+        Spacer(1, 6 * mm),
+    ]
+
+
+def _build_resubmit_section(items: list[str], styles) -> list:
+    """Numbered 'Before You Resubmit' checklist."""
+    s = ParagraphStyle(
+        "resubmit_item",
+        parent=styles["bullet"],
+        fontSize=8, leading=12,
+        leftIndent=16, spaceAfter=4,
+    )
+    bullets = [
+        Paragraph(f'<font color="#7c3aed"><b>{i + 1}.</b></font>  {item}', s)
+        for i, item in enumerate(items)
+    ]
+    return KeepTogether([
+        HRFlowable(width="100%", thickness=1, color=_C_BORDER, dash=(4, 4)),
+        Spacer(1, 3 * mm),
+        Paragraph("Before You Resubmit", styles["section_heading"]),
         Spacer(1, 2 * mm),
         *bullets,
         Spacer(1, 5 * mm),

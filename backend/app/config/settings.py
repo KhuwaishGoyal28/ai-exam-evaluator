@@ -28,13 +28,18 @@ class Settings(BaseSettings):
         "https://ai-exam-evaluator-chb7.onrender.com",
     ]
 
-    # ── Groq (text evaluation) ────────────────────────────────────────────────
+    # ── Groq (text evaluation + vision OCR) ──────────────────────────────────
     groq_api_key: str = ""
-    groq_model: str = "openai/gpt-oss-120b"
-    groq_max_tokens: int = 1500   # Groq free tier: 8K TPM total (input+output)
+    groq_model: str = "openai/gpt-oss-120b"        # text evaluation model
+    groq_max_tokens: int = 1500
     groq_temperature: float = 0.2
 
-    # ── OpenAI (vision / OCR) ─────────────────────────────────────────────────
+    # Groq Vision — OCR for images and scanned PDFs
+    groq_vision_model: str = "qwen/qwen3.6-27b"    # vision-capable model on Groq
+    groq_vision_max_tokens: int = 1024              # keep output small to save TPM budget
+
+    # ── OpenAI (optional — only used if groq_vision_model is unavailable) ────
+    # Set OPENAI_API_KEY in .env to re-enable OpenAI as the OCR backend.
     openai_api_key: str = ""
     openai_vision_model: str = "gpt-4o-mini"
     openai_max_tokens: int = 8192
@@ -63,8 +68,7 @@ class Settings(BaseSettings):
 
         if not self.groq_api_key or self.groq_api_key in placeholders:
             missing.append("GROQ_API_KEY")
-        if not self.openai_api_key or self.openai_api_key in placeholders:
-            missing.append("OPENAI_API_KEY")
+        # OpenAI key is now optional — Groq Vision handles OCR
         if not self.supabase_url or self.supabase_url in placeholders:
             missing.append("SUPABASE_URL")
         if not self.supabase_service_role_key or self.supabase_service_role_key in placeholders:

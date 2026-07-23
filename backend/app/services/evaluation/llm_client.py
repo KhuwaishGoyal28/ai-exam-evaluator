@@ -104,8 +104,13 @@ def _validate_and_fill(data: dict) -> dict:
     data.setdefault("annotation_comments", [])
     data.setdefault("strengths", [])
     data.setdefault("improvements", [])
+    data.setdefault("before_resubmit", [])   # essay-only field; harmless default for standard
     for ps in data.get("parameter_scores", []):
         ps.setdefault("suggestions", [])
+        # Essay uses examiner_remark; standard uses justification — default both so
+        # result_mapper never hits a KeyError regardless of rubric mode.
+        ps.setdefault("examiner_remark", ps.get("justification", ""))
+        ps.setdefault("justification",   ps.get("examiner_remark", ""))
     return data
 
 

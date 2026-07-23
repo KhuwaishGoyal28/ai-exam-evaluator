@@ -9,7 +9,10 @@ from .exceptions import (
     StorageError,
     ExternalServiceError,
 )
-from .constants import FileType, RubricParameter, RUBRIC_DESCRIPTIONS, OCR_CONFIDENCE_THRESHOLD
+from .constants import (
+    FileType, RubricParameter, RUBRIC_DESCRIPTIONS, OCR_CONFIDENCE_THRESHOLD,
+    EssayRubricParameter, ESSAY_RUBRIC_MAX, ESSAY_RUBRIC_DESCRIPTIONS, ExamType,
+)
 from .logging import configure_logging, get_logger
 
 __all__ = [
@@ -26,6 +29,10 @@ __all__ = [
     "RubricParameter",
     "RUBRIC_DESCRIPTIONS",
     "OCR_CONFIDENCE_THRESHOLD",
+    "EssayRubricParameter",
+    "ESSAY_RUBRIC_MAX",
+    "ESSAY_RUBRIC_DESCRIPTIONS",
+    "ExamType",
     "configure_logging",
     "get_logger",
 ]

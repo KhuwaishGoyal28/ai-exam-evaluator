@@ -16,6 +16,7 @@ from app.models.responses.evaluate import (
     EvaluateResponse,
     EvaluationResultOut,
     ParameterScoreOut,
+    EssayParameterScoreOut,
     AnnotationCommentOut,
 )
 from app.services.ocr import run_ocr_pipeline
@@ -68,7 +69,7 @@ async def process_answer_submission(
         job_id=job_id,
         original_url=original_stored.secure_url,
         annotated_url=annotated_stored.secure_url,
-        report_url="",  # filled after report upload
+        report_url="",
         ocr_result=ocr_result,
         evaluation_result=evaluation_result,
     )
@@ -101,6 +102,31 @@ def _build_response(
     evaluation_result,
 ) -> EvaluateResponse:
     """Assemble the flat response DTO from domain objects."""
+
+    # Map essay parameter scores if present
+    essay_scores_out = [
+        EssayParameterScoreOut(
+            parameter=eps.parameter,
+            score=eps.score,
+            max_score=eps.max_score,
+            examiner_remark=eps.examiner_remark,
+            suggestions=eps.suggestions,
+        )
+        for eps in evaluation_result.essay_parameter_scores
+    ]
+
+    # Map standard parameter scores if present
+    standard_scores_out = [
+        ParameterScoreOut(
+            parameter=ps.parameter,
+            score=ps.score,
+            max_score=ps.max_score,
+            justification=ps.justification,
+            suggestions=ps.suggestions,
+        )
+        for ps in evaluation_result.parameter_scores
+    ]
+
     return EvaluateResponse(
         job_id=job_id,
         original_file_url=original_url,
@@ -110,16 +136,9 @@ def _build_response(
         word_count=ocr_result.word_count,
         ocr_low_confidence=ocr_result.low_confidence,
         evaluation=EvaluationResultOut(
-            parameter_scores=[
-                ParameterScoreOut(
-                    parameter=ps.parameter,
-                    score=ps.score,
-                    max_score=ps.max_score,
-                    justification=ps.justification,
-                    suggestions=ps.suggestions,
-                )
-                for ps in evaluation_result.parameter_scores
-            ],
+            parameter_scores=standard_scores_out,
+            essay_parameter_scores=essay_scores_out,
+            before_resubmit=evaluation_result.before_resubmit,
             total_score=evaluation_result.total_score,
             max_total_score=evaluation_result.max_total_score,
             overall_remark=evaluation_result.overall_remark,
@@ -147,35 +166,53 @@ def _build_report_json(
     Build a self-contained JSON report suitable for download/archival.
     Includes all evaluation data, file URLs, and metadata.
     """
+    ev = response.evaluation
+
+    # Build parameter scores section — essay or standard
+    if ev.essay_parameter_scores:
+        param_section = [
+            {
+                "parameter":       eps.parameter,
+                "score":           eps.score,
+                "max_score":       eps.max_score,
+                "examiner_remark": eps.examiner_remark,
+                "suggestions":     eps.suggestions,
+            }
+            for eps in ev.essay_parameter_scores
+        ]
+    else:
+        param_section = [
+            {
+                "parameter":     ps.parameter,
+                "score":         ps.score,
+                "max_score":     ps.max_score,
+                "justification": ps.justification,
+                "suggestions":   ps.suggestions,
+            }
+            for ps in ev.parameter_scores
+        ]
+
     report = {
-        "job_id":          response.job_id,
-        "exam_type":       exam_type.value,
-        "question":        question or "",
+        "job_id":    response.job_id,
+        "exam_type": exam_type.value,
+        "question":  question or "",
         "files": {
-            "original":    response.original_file_url,
-            "annotated":   response.annotated_file_url,
+            "original":  response.original_file_url,
+            "annotated": response.annotated_file_url,
         },
         "ocr": {
-            "extracted_text":  response.extracted_text,
-            "word_count":      response.word_count,
-            "low_confidence":  response.ocr_low_confidence,
+            "extracted_text": response.extracted_text,
+            "word_count":     response.word_count,
+            "low_confidence": response.ocr_low_confidence,
         },
         "evaluation": {
-            "total_score":      response.evaluation.total_score,
-            "max_total_score":  response.evaluation.max_total_score,
-            "overall_remark":   response.evaluation.overall_remark,
-            "strengths":        response.evaluation.strengths,
-            "improvements":     response.evaluation.improvements,
-            "parameter_scores": [
-                {
-                    "parameter":     ps.parameter,
-                    "score":         ps.score,
-                    "max_score":     ps.max_score,
-                    "justification": ps.justification,
-                    "suggestions":   ps.suggestions,
-                }
-                for ps in response.evaluation.parameter_scores
-            ],
+            "total_score":      ev.total_score,
+            "max_total_score":  ev.max_total_score,
+            "overall_remark":   ev.overall_remark,
+            "strengths":        ev.strengths,
+            "improvements":     ev.improvements,
+            "before_resubmit":  ev.before_resubmit,
+            "parameter_scores": param_section,
         },
         "annotation_comments": [
             {

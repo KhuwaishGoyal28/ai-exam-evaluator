@@ -62,19 +62,33 @@ async def _extract_from_pdf(pdf_bytes: bytes) -> str:
     """
     Use three-stage resolver to get the best extraction mode,
     then call the right Vision function (or return text directly).
+
+    For handwritten / scanned PDFs the embedded-image path is always
+    preferred over returning raw text — GPT-4o Vision handles cursive,
+    struck-through words, and margin annotations far better than pypdf.
     """
     payload, mode = resolve_pdf_payload(pdf_bytes)
 
     if mode == "text":
-        # Text already extracted by pypdf — no Vision call needed
-        logger.info("ocr_mode", mode="pdf_text_direct")
-        return payload  # type: ignore[return-value]
+        # Text already extracted by pypdf — no Vision call needed.
+        # But only trust it when it looks like typed text (long words, common
+        # English tokens). Very short or garbled extraction → fall back to Vision.
+        from .confidence_estimator import estimate_confidence
+        conf = estimate_confidence(payload)   # type: ignore[arg-type]
+        if conf < 0 or conf >= 0.55:
+            logger.info("ocr_mode", mode="pdf_text_direct", confidence=conf)
+            return payload  # type: ignore[return-value]
+        # Low confidence on pypdf text → the PDF likely contains a scan
+        # where pypdf picked up stray characters. Re-send as raw PDF to Vision.
+        logger.info("ocr_mode", mode="pdf_text_low_conf_fallback_vision", confidence=conf)
+        return await extract_text_from_pdf(pdf_bytes)
 
     if mode == "image":
+        # Scanned / handwritten PDF — always send to Vision for best accuracy.
         logger.info("ocr_mode", mode="pdf_image_vision")
         return await extract_text_via_vision(payload)  # type: ignore[arg-type]
 
-    # mode == "pdf" — send raw PDF to GPT-4o Vision
+    # mode == "pdf" — send raw PDF bytes to GPT-4o Vision
     logger.info("ocr_mode", mode="pdf_raw_vision")
     return await extract_text_from_pdf(payload)  # type: ignore[arg-type]
 
