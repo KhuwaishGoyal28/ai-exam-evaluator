@@ -1,564 +1,622 @@
 """
-Builds a "checked PDF" — original answer pages with ink marks and margin notes,
-plus a final summary score sheet page.
+Builds the final checked PDF using PyMuPDF (fitz).
 
-Single responsibility: original pages + evaluation → checked PDF bytes.
+Pipeline:
+  1. For each original page image → draw red-ink marks at y_percent positions
+  2. Append a final score-sheet page (Roundtable IAS style)
 
-Layout per answer page:
-  - Original answer page (as background image)
-  - Red/green ink marks overlaid (tick, cross, wavy underlines)
-  - Right margin panel with comment boxes (coloured by sentiment)
-  - Page footer
+Red-ink marks per annotation_type:
+  PRAISE          → green tick (✓) on left + green underline + RIGHT_MARGIN box
+  CORRECTION      → red cross (✗) on left + red wavy underline + RIGHT_MARGIN box
+  STRUCTURAL_NOTE → violet margin box only (no inline mark)
 
-Final page: summary score sheet.
-  - Standard exams  → 5-parameter table
-  - Essay exam      → 12-parameter table matching the Roundtable IAS sheet style
+mark_symbol overrides:
+  TICK        → ✓  (green)
+  CROSS       → ✗  (red)
+  CIRCLE      → red ellipse around text region
+  UNDERLINE   → straight coloured underline
+  MARGIN_BOX  → coloured box in specified margin position only
+
+All positions are computed from y_percent (0=top, 100=bottom of page).
 """
 from __future__ import annotations
 
 import io
-from PIL import Image
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.pdfgen.canvas import Canvas
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from app.models.domain.evaluation import EvaluationResult, AnnotationComment
+from app.models.domain.evaluation import (
+    EvaluationResult, PageAnnotation, ParameterBreakdown,
+)
 from app.core.logging import get_logger
-from .ink_marker import draw_ink_marks
-from .paragraph_locator import compute_paragraph_y_positions
 
 logger = get_logger(__name__)
 
-_MARGIN_RATIO = 0.30
-_RED    = (0.86, 0.15, 0.15)
-_GREEN  = (0.09, 0.64, 0.29)
+# ── Colour palette (r, g, b) 0–1 ─────────────────────────────────────────────
+_RED    = (0.86, 0.10, 0.10)
+_GREEN  = (0.08, 0.63, 0.28)
 _BLUE   = (0.15, 0.39, 0.92)
-_DARK   = (0.06, 0.09, 0.16)
-_LIGHT  = (0.58, 0.64, 0.72)
 _VIOLET = (0.39, 0.13, 0.83)
 _AMBER  = (0.85, 0.53, 0.04)
+_DARK   = (0.06, 0.09, 0.16)
+_LIGHT  = (0.72, 0.72, 0.78)
+_WHITE  = (1.00, 1.00, 1.00)
+
+# Margin panel on the right side of each page (proportion of page width)
+_MARGIN_RATIO   = 0.28      # 28% right strip reserved for examiner notes
+_MARGIN_PAD     = 6         # pt padding inside margin boxes
+_BOX_MIN_HEIGHT = 22        # pt minimum comment box height
 
 
 def build_checked_pdf(
-    page_images: list[Image.Image],
+    page_images: list,          # list[PIL.Image.Image]
     evaluation: EvaluationResult,
     question: str | None,
     exam_type: str,
     job_id: str,
 ) -> bytes:
-    """Build a complete checked PDF. Returns raw PDF bytes."""
-    buf = io.BytesIO()
-    comments = evaluation.annotation_comments
-    pages_comments = _distribute_comments(comments, len(page_images))
+    """
+    Build the complete checked PDF.
+    Returns raw PDF bytes ready for storage / download.
+    """
+    try:
+        import fitz
+    except ImportError:
+        logger.warning("pymupdf_not_installed_fallback_reportlab")
+        return _build_fallback_pdf(page_images, evaluation, question, exam_type, job_id)
 
-    c = Canvas(buf, pagesize=A4)
-    W, H = A4
+    doc = fitz.open()
 
-    for page_num, (page_img, page_comments) in enumerate(
-        zip(page_images, pages_comments)
-    ):
-        _render_checked_page(
-            canvas=c, page_img=page_img, page_comments=page_comments,
-            page_num=page_num, total_pages=len(page_images),
-            evaluation=evaluation, W=W, H=H,
-        )
-        c.showPage()
+    for page_num_0, pil_img in enumerate(page_images):
+        page_num_1 = page_num_0 + 1
+        img_bytes  = _pil_to_jpeg_bytes(pil_img)
+        annotations = evaluation.annotations_for_page(page_num_1)
 
-    # Final summary page
-    if evaluation.is_essay:
-        _render_essay_summary_page(c, evaluation, question, exam_type, job_id, W, H)
-    else:
-        _render_standard_summary_page(c, evaluation, question, exam_type, job_id, W, H)
-    c.showPage()
+        _add_annotated_page(doc, img_bytes, annotations, page_num_1,
+                            len(page_images), evaluation)
 
-    c.save()
-    pdf_bytes = buf.getvalue()
-    logger.info("checked_pdf_built", pages=len(page_images) + 1, size_bytes=len(pdf_bytes))
+    # Final score sheet page
+    _add_score_sheet(doc, evaluation, question, exam_type, job_id)
+
+    pdf_bytes = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    logger.info("checked_pdf_built_pymupdf",
+                pages=len(page_images) + 1,
+                size_kb=len(pdf_bytes) // 1024)
     return pdf_bytes
 
 
-def _render_checked_page(
-    canvas: Canvas, page_img: Image.Image,
-    page_comments: list[AnnotationComment],
-    page_num: int, total_pages: int,
-    evaluation: EvaluationResult, W: float, H: float,
+# ── Page rendering ────────────────────────────────────────────────────────────
+
+def _add_annotated_page(
+    doc,
+    img_bytes: bytes,
+    annotations: list[PageAnnotation],
+    page_num: int,
+    total_pages: int,
+    evaluation: EvaluationResult,
 ) -> None:
-    """Render one answer page with ink marks and margin notes."""
-    margin_w = W * _MARGIN_RATIO
-    answer_w = W - margin_w
+    """Insert one annotated page into the fitz document."""
+    import fitz
 
-    y_positions = compute_paragraph_y_positions(
-        image_height=page_img.height,
-        num_paragraphs=max(len(page_comments), 1),
-    )
-    marked_img = draw_ink_marks(page_img, page_comments, y_positions, page_img.width)
+    # Insert image as a new page
+    img_rect = fitz.Rect(0, 0, 595, 842)   # A4 points
+    page = doc.new_page(width=595, height=842)
+    page.insert_image(img_rect, stream=img_bytes)
 
-    canvas.drawImage(
-        _pil_to_reportlab(marked_img), 0, 0,
-        width=answer_w, height=H,
-        preserveAspectRatio=True, anchor="nw",
-    )
+    W, H = 595, 842
+    margin_x = W * (1 - _MARGIN_RATIO)     # x where margin panel starts
 
-    # Margin panel background
-    canvas.setFillColorRGB(0.97, 0.97, 0.99)
-    canvas.rect(answer_w, 0, margin_w, H, fill=1, stroke=0)
-    canvas.setStrokeColorRGB(*_LIGHT)
-    canvas.setLineWidth(1)
-    canvas.line(answer_w, 0, answer_w, H)
+    # ── Draw margin panel background ──────────────────────────────────────
+    margin_rect = fitz.Rect(margin_x, 0, W, H)
+    page.draw_rect(margin_rect, color=None, fill=(0.97, 0.97, 0.99))
+
+    # Separator line
+    page.draw_line(fitz.Point(margin_x, 0), fitz.Point(margin_x, H),
+                   color=_LIGHT, width=0.8)
 
     # Margin header
-    canvas.setFillColorRGB(*_VIOLET)
-    canvas.setFont("Helvetica-Bold", 8)
-    canvas.drawString(answer_w + 6, H - 18, "Examiner's Notes")
-    canvas.setStrokeColorRGB(*_LIGHT)
-    canvas.setLineWidth(0.5)
-    canvas.line(answer_w + 4, H - 22, W - 4, H - 22)
-
-    _draw_margin_comments(canvas, page_comments, y_positions, answer_w, margin_w, H)
-    _draw_page_footer(canvas, page_num, total_pages, W)
-
-
-def _draw_margin_comments(
-    canvas: Canvas, comments: list[AnnotationComment],
-    y_positions: list[int], x_start: float, margin_w: float, page_h: float,
-) -> None:
-    BOX_W = margin_w - 10
-    BOX_PAD = 5
-    FONT_SZ = 7
-    LINE_H = 10
-    MIN_GAP = 6
-    COLOURS = {
-        "positive": (_GREEN, (0.90, 0.98, 0.93)),
-        "neutral":  (_BLUE,  (0.92, 0.93, 0.99)),
-        "negative": (_RED,   (0.99, 0.92, 0.92)),
-    }
-    ICONS = {"positive": "✓", "neutral": "•", "negative": "✗"}
-    next_y_pdf = page_h - 28
-
-    sorted_c = sorted(
-        comments,
-        key=lambda c: -(y_positions[c.paragraph_index]
-                        if c.paragraph_index < len(y_positions) else 0),
+    page.insert_text(
+        fitz.Point(margin_x + 5, 16),
+        "Examiner's Notes",
+        fontsize=7, color=_VIOLET,
+        fontname="helv",
     )
-    for comment in sorted_c:
-        stroke, fill = COLOURS.get(comment.sentiment, COLOURS["neutral"])
-        icon = ICONS.get(comment.sentiment, "•")
-        words = comment.comment_text.split()
-        lines: list[str] = []
-        current = ""
-        for word in words:
-            test = f"{current} {word}".strip()
-            if len(test) * 4.5 <= BOX_W - 20:
-                current = test
-            else:
-                if current:
-                    lines.append(current)
-                current = word
-        if current:
-            lines.append(current)
-        lines = lines or [""]
-        box_h = BOX_PAD * 2 + LINE_H * len(lines)
-        y_box = next_y_pdf - box_h
-        if y_box < 10:
-            break
-        canvas.setFillColorRGB(*fill)
-        canvas.rect(x_start + 5, y_box, BOX_W, box_h, fill=1, stroke=0)
-        canvas.setFillColorRGB(*stroke)
-        canvas.rect(x_start + 5, y_box, 3, box_h, fill=1, stroke=0)
-        canvas.setFillColorRGB(*stroke)
-        canvas.setFont("Helvetica-Bold", FONT_SZ + 1)
-        canvas.drawString(x_start + 11, y_box + BOX_PAD + (len(lines) - 1) * LINE_H, icon)
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica", FONT_SZ)
-        for i, line in enumerate(lines):
-            canvas.drawString(x_start + 22, y_box + BOX_PAD + (len(lines) - 1 - i) * LINE_H, line)
-        next_y_pdf = y_box - MIN_GAP
-
-
-def _draw_page_footer(canvas: Canvas, page_num: int, total: int, W: float) -> None:
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColorRGB(*_LIGHT)
-    canvas.drawString(8 * mm, 8 * mm, f"Page {page_num + 1} of {total + 1}")
-    canvas.drawRightString(W - 8 * mm, 8 * mm, "EvalPro — Checked Answer")
-
-
-# ── Essay summary page (Roundtable IAS style) ─────────────────────────────────
-
-def _render_essay_summary_page(
-    canvas: Canvas, evaluation: EvaluationResult,
-    question: str | None, exam_type: str, job_id: str,
-    W: float, H: float,
-) -> None:
-    """Render the essay evaluation sheet matching the Roundtable IAS sample."""
-    from datetime import datetime, timezone
-    now = datetime.now(tz=timezone.utc).strftime("%d %b %Y")
-    MARGIN = 18 * mm
-    total  = evaluation.total_score
-    max_t  = evaluation.max_total_score
-
-    pct = total / max_t if max_t else 0
-    grade_rgb = (
-        _GREEN if pct >= 0.8 else
-        _VIOLET if pct >= 0.6 else
-        _AMBER if pct >= 0.4 else
-        _RED
+    page.draw_line(
+        fitz.Point(margin_x + 4, 20),
+        fitz.Point(W - 4, 20),
+        color=_LIGHT, width=0.4,
     )
 
-    # ── Header bar ────────────────────────────────────────────────────────────
-    canvas.setFillColorRGB(*_VIOLET)
-    canvas.rect(0, H - 20 * mm, W, 20 * mm, fill=1, stroke=0)
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(MARGIN, H - 9 * mm, "ROUNDTABLE IAS  ·  ESSAY MENTORSHIP CELL")
-    canvas.setFont("Helvetica-Bold", 14)
-    canvas.drawString(MARGIN, H - 16 * mm, "Essay Evaluation Sheet")
+    # ── Draw each annotation ──────────────────────────────────────────────
+    next_margin_y = 26.0    # next available y in the margin panel
 
-    # Right-side meta
-    canvas.setFont("Helvetica", 7)
-    canvas.drawRightString(W - MARGIN, H - 8 * mm,  f"Paper: Essay  ·  Word limit: 1200")
-    canvas.drawRightString(W - MARGIN, H - 12 * mm, f"Length: ~{evaluation.annotation_comments and 'see text' or 'N/A'}")
-    canvas.drawRightString(W - MARGIN, H - 16 * mm, f"Evaluated: {now}")
+    # Sort annotations top-to-bottom by y_percent
+    sorted_ann = sorted(annotations, key=lambda a: a.location.y_percent)
 
-    y = H - 26 * mm
+    for ann in sorted_ann:
+        y_pt = (ann.location.y_percent / 100.0) * H   # convert % → points
 
-    # ── Topic block ───────────────────────────────────────────────────────────
-    canvas.setFillColorRGB(0.94, 0.94, 0.98)
-    canvas.rect(MARGIN, y - 10 * mm, W - 2 * MARGIN, 10 * mm, fill=1, stroke=0)
-    canvas.setStrokeColorRGB(*_VIOLET)
-    canvas.setLineWidth(0.5)
-    canvas.rect(MARGIN, y - 10 * mm, W - 2 * MARGIN, 10 * mm, fill=0, stroke=1)
-    canvas.setFillColorRGB(*_DARK)
-    canvas.setFont("Helvetica-Bold", 7)
-    canvas.drawString(MARGIN + 3 * mm, y - 3 * mm, "TOPIC")
-    canvas.setFont("Helvetica", 8)
-    topic = (question or exam_type)[:120]
-    canvas.drawString(MARGIN + 3 * mm, y - 8 * mm, f'"{topic}"')
-    y -= 14 * mm
+        colour  = _annotation_colour(ann)
+        symbol  = _annotation_symbol(ann)
 
-    # ── Parameter table ───────────────────────────────────────────────────────
-    COL_PARAM  = (W - 2 * MARGIN) * 0.42
-    COL_MAX    = (W - 2 * MARGIN) * 0.08
-    COL_MARKS  = (W - 2 * MARGIN) * 0.10
-    COL_REMARK = (W - 2 * MARGIN) * 0.40
-    ROW_H = 8 * mm
+        # ── Inline mark on the answer body ────────────────────────────────
+        left_x = 8.0    # left edge for tick/cross glyphs
+        text_x = 30.0   # approximate start of handwritten text
 
-    # Table header
-    canvas.setFillColorRGB(*_DARK)
-    canvas.rect(MARGIN, y - ROW_H, W - 2 * MARGIN, ROW_H, fill=1, stroke=0)
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.setFont("Helvetica-Bold", 7)
-    hx = MARGIN + 2 * mm
-    canvas.drawString(hx,                           y - 5.5 * mm, "PARAMETER")
-    canvas.drawString(hx + COL_PARAM,               y - 5.5 * mm, "MAX")
-    canvas.drawString(hx + COL_PARAM + COL_MAX,     y - 5.5 * mm, "MARKS")
-    canvas.drawString(hx + COL_PARAM + COL_MAX + COL_MARKS, y - 5.5 * mm, "EXAMINER'S REMARK")
-    y -= ROW_H
+        if ann.mark_symbol in ("TICK", "CROSS") or ann.annotation_type == "PRAISE":
+            # Draw glyph on left margin of answer area
+            page.insert_text(
+                fitz.Point(left_x, y_pt),
+                symbol,
+                fontsize=11, color=colour,
+                fontname="helv",
+            )
 
-    for i, eps in enumerate(evaluation.essay_parameter_scores):
-        row_fill = (1.0, 1.0, 1.0) if i % 2 == 0 else (0.97, 0.97, 0.99)
-        canvas.setFillColorRGB(*row_fill)
-        canvas.rect(MARGIN, y - ROW_H, W - 2 * MARGIN, ROW_H, fill=1, stroke=0)
+        if ann.mark_symbol == "UNDERLINE" or ann.annotation_type == "PRAISE":
+            # Green underline across ~50% of text width
+            page.draw_line(
+                fitz.Point(text_x, y_pt + 3),
+                fitz.Point(margin_x - 20, y_pt + 3),
+                color=colour, width=1.2,
+            )
 
-        # Score colour
-        pct_p = eps.score / eps.max_score if eps.max_score else 0
-        s_rgb = _GREEN if pct_p >= 0.75 else (_AMBER if pct_p >= 0.5 else _RED)
+        elif ann.mark_symbol == "UNDERLINE" or ann.annotation_type == "CORRECTION":
+            # Wavy red underline
+            _draw_wavy_underline(page, text_x, y_pt + 3,
+                                  margin_x - 20, colour)
 
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica", 7)
-        rx = MARGIN + 2 * mm
-        # Truncate parameter name to fit
-        pname = eps.parameter[:36]
-        canvas.drawString(rx, y - 5.5 * mm, pname)
-        canvas.drawString(rx + COL_PARAM, y - 5.5 * mm, str(eps.max_score))
+        elif ann.mark_symbol == "CIRCLE":
+            # Circle around a small region at y_pt
+            page.draw_oval(
+                fitz.Rect(text_x, y_pt - 8, text_x + 80, y_pt + 4),
+                color=colour, width=1.0,
+            )
 
-        canvas.setFillColorRGB(*s_rgb)
-        canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(rx + COL_PARAM + COL_MAX, y - 5.5 * mm, str(eps.score))
+        # Small diagonal arrow pointing to margin
+        arrow_tip_x = margin_x - 4
+        page.draw_line(
+            fitz.Point(margin_x - 18, y_pt),
+            fitz.Point(arrow_tip_x, y_pt),
+            color=colour, width=0.6,
+        )
 
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica", 6.5)
-        remark = eps.examiner_remark[:72]
-        canvas.drawString(rx + COL_PARAM + COL_MAX + COL_MARKS, y - 5.5 * mm, remark)
+        # ── Margin comment box ─────────────────────────────────────────────
+        box_y = max(next_margin_y, y_pt - 6)
+        box_y = min(box_y, H - _BOX_MIN_HEIGHT - 4)
 
-        # Row border
-        canvas.setStrokeColorRGB(*_LIGHT)
-        canvas.setLineWidth(0.3)
-        canvas.line(MARGIN, y - ROW_H, W - MARGIN, y - ROW_H)
-        y -= ROW_H
+        box_h = _draw_margin_box(
+            page, ann.annotation_text, ann.annotation_type,
+            margin_x + 3, box_y, W - 4, colour,
+        )
+        next_margin_y = box_y + box_h + 4
 
-    # Total score row
-    canvas.setFillColorRGB(*_DARK)
-    canvas.rect(MARGIN, y - ROW_H, W - 2 * MARGIN, ROW_H, fill=1, stroke=0)
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(MARGIN + 2 * mm, y - 6 * mm, "TOTAL SCORE")
-    canvas.setFillColorRGB(*grade_rgb)
-    canvas.setFont("Helvetica-Bold", 13)
-    canvas.drawRightString(W - MARGIN - 2 * mm, y - 6 * mm, f"{total} / {max_t}")
-    y -= ROW_H + 6 * mm
-
-    # ── Overall remarks block ─────────────────────────────────────────────────
-    if y > 40 * mm:
-        canvas.setFillColorRGB(*_VIOLET)
-        canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(MARGIN, y, "OVERALL REMARKS")
-        y -= 4 * mm
-
-        canvas.setFillColorRGB(0.97, 0.95, 1.0)
-        remark_h = min(20 * mm, max(10 * mm, len(evaluation.overall_remark) * 0.35))
-        canvas.rect(MARGIN, y - remark_h, W - 2 * MARGIN, remark_h, fill=1, stroke=0)
-        canvas.setStrokeColorRGB(*_VIOLET)
-        canvas.setLineWidth(0.4)
-        canvas.rect(MARGIN, y - remark_h, W - 2 * MARGIN, remark_h, fill=0, stroke=1)
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica-Oblique", 7.5)
-        _draw_wrapped_text(canvas, evaluation.overall_remark,
-                           MARGIN + 3 * mm, y - 4 * mm, W - 2 * MARGIN - 6 * mm, 7.5)
-        y -= remark_h + 5 * mm
-
-    # ── Before You Resubmit ───────────────────────────────────────────────────
-    if evaluation.before_resubmit and y > 30 * mm:
-        # Dashed separator
-        canvas.setDash(3, 3)
-        canvas.setStrokeColorRGB(*_LIGHT)
-        canvas.setLineWidth(0.5)
-        canvas.line(MARGIN, y, W - MARGIN, y)
-        canvas.setDash()
-        y -= 5 * mm
-
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(MARGIN, y, "BEFORE YOU RESUBMIT")
-        y -= 5 * mm
-
-        # Two-column layout for the checklist items
-        items = evaluation.before_resubmit
-        mid   = (len(items) + 1) // 2
-        left  = items[:mid]
-        right = items[mid:]
-        col_w = (W - 2 * MARGIN - 6 * mm) / 2
-
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColorRGB(*_DARK)
-        row_y = y
-        for i, item in enumerate(left):
-            num = i + 1
-            canvas.setFillColorRGB(*_VIOLET)
-            canvas.circle(MARGIN + 3.5 * mm, row_y - 1.5 * mm, 3.5 * mm, fill=1, stroke=0)
-            canvas.setFillColorRGB(1, 1, 1)
-            canvas.setFont("Helvetica-Bold", 6)
-            canvas.drawCentredString(MARGIN + 3.5 * mm, row_y - 3 * mm, str(num))
-            canvas.setFillColorRGB(*_DARK)
-            canvas.setFont("Helvetica", 7)
-            _draw_wrapped_text(canvas, item, MARGIN + 8 * mm, row_y - 1 * mm, col_w - 8 * mm, 7)
-            row_y -= 10 * mm
-
-        row_y = y
-        rx_start = MARGIN + col_w + 6 * mm
-        for j, item in enumerate(right):
-            num = mid + j + 1
-            canvas.setFillColorRGB(*_VIOLET)
-            canvas.circle(rx_start + 3.5 * mm, row_y - 1.5 * mm, 3.5 * mm, fill=1, stroke=0)
-            canvas.setFillColorRGB(1, 1, 1)
-            canvas.setFont("Helvetica-Bold", 6)
-            canvas.drawCentredString(rx_start + 3.5 * mm, row_y - 3 * mm, str(num))
-            canvas.setFillColorRGB(*_DARK)
-            canvas.setFont("Helvetica", 7)
-            _draw_wrapped_text(canvas, item, rx_start + 8 * mm, row_y - 1 * mm, col_w - 8 * mm, 7)
-            row_y -= 10 * mm
-
-    # ── Footer ────────────────────────────────────────────────────────────────
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColorRGB(*_LIGHT)
-    canvas.drawString(MARGIN, 8 * mm, "theroundtableias.com")
-    canvas.drawRightString(W - MARGIN, 8 * mm, "RoundtableIAS  ·  YouTube")
-
-
-# ── Standard summary page (original 5-param layout) ──────────────────────────
-
-def _render_standard_summary_page(
-    canvas: Canvas, evaluation: EvaluationResult,
-    question: str | None, exam_type: str, job_id: str,
-    W: float, H: float,
-) -> None:
-    """Render the final summary score sheet page for non-essay exams."""
-    from datetime import datetime, timezone
-    now = datetime.now(tz=timezone.utc).strftime("%d %b %Y  %H:%M UTC")
-    MARGIN = 20 * mm
-
-    pct = evaluation.total_score / evaluation.max_total_score if evaluation.max_total_score else 0
-    grade = "A" if pct >= 0.8 else "B" if pct >= 0.6 else "C" if pct >= 0.4 else "D"
-    grade_rgb = (
-        _GREEN if pct >= 0.8 else _VIOLET if pct >= 0.6 else _AMBER if pct >= 0.4 else _RED
+    # ── Page footer ───────────────────────────────────────────────────────
+    page.insert_text(
+        fitz.Point(8, H - 8),
+        f"Page {page_num} of {total_pages + 1}",
+        fontsize=6, color=_LIGHT, fontname="helv",
+    )
+    page.insert_text(
+        fitz.Point(W - 120, H - 8),
+        "EvalPro — Checked Answer",
+        fontsize=6, color=_LIGHT, fontname="helv",
     )
 
-    # Header bar
-    canvas.setFillColorRGB(*_VIOLET)
-    canvas.rect(0, H - 14 * mm, W, 14 * mm, fill=1, stroke=0)
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.setFont("Helvetica-Bold", 13)
-    canvas.drawString(MARGIN, H - 10 * mm, "Evaluation Summary — Final Score Sheet")
 
-    y = H - 28 * mm
-    canvas.setFillColorRGB(*_DARK)
-    canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(MARGIN, y, f"Exam Type: {exam_type}")
-    y -= 5 * mm
-    if question:
-        canvas.setFont("Helvetica", 8)
-        _draw_wrapped_text(canvas, f"Question: {question}", MARGIN, y, W - 2 * MARGIN, 8)
-        y -= 8 * mm
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColorRGB(*_LIGHT)
-    canvas.drawString(MARGIN, y, f"Generated: {now}   |   Job ID: {job_id}")
-    y -= 6 * mm
-
-    # Score hero
-    canvas.setFillColorRGB(0.97, 0.97, 0.99)
-    canvas.roundRect(MARGIN, y - 28 * mm, W - 2 * MARGIN, 28 * mm, 6, fill=1, stroke=0)
-    canvas.setFillColorRGB(*grade_rgb)
-    canvas.setFont("Helvetica-Bold", 42)
-    canvas.drawString(MARGIN + 6 * mm, y - 20 * mm, str(evaluation.total_score))
-    canvas.setFont("Helvetica", 18)
-    canvas.setFillColorRGB(*_LIGHT)
-    canvas.drawString(MARGIN + 26 * mm, y - 20 * mm, f"/ {evaluation.max_total_score}")
-    canvas.setFillColorRGB(*grade_rgb)
-    canvas.setFont("Helvetica-Bold", 48)
-    canvas.drawString(W - MARGIN - 22 * mm, y - 22 * mm, grade)
-    y -= 34 * mm
-
-    y = _draw_standard_param_table(canvas, evaluation, MARGIN, y, W)
-    y -= 5 * mm
-
-    if evaluation.strengths:
-        canvas.setFillColorRGB(*_GREEN)
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(MARGIN, y, "Strengths")
-        y -= 4 * mm
-        canvas.setFont("Helvetica", 8)
-        canvas.setFillColorRGB(*_DARK)
-        for s in evaluation.strengths:
-            canvas.drawString(MARGIN + 4 * mm, y, f"✓  {s}")
-            y -= 4 * mm
-        y -= 2 * mm
-
-    if evaluation.improvements:
-        canvas.setFillColorRGB(*_RED)
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(MARGIN, y, "Areas for Improvement")
-        y -= 4 * mm
-        canvas.setFont("Helvetica", 8)
-        canvas.setFillColorRGB(*_DARK)
-        for imp in evaluation.improvements:
-            canvas.drawString(MARGIN + 4 * mm, y, f"✗  {imp}")
-            y -= 4 * mm
-
-    if y > 20 * mm:
-        canvas.setFillColorRGB(*_VIOLET)
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(MARGIN, y, "Examiner's Remark")
-        y -= 4 * mm
-        canvas.setFillColorRGB(0.97, 0.95, 1.0)
-        canvas.roundRect(MARGIN, y - 12 * mm, W - 2 * MARGIN, 12 * mm, 4, fill=1, stroke=0)
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica-Oblique", 8)
-        _draw_wrapped_text(canvas, f'"{evaluation.overall_remark}"',
-                           MARGIN + 4 * mm, y - 4 * mm, W - 2 * MARGIN - 8 * mm, 8)
-
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColorRGB(*_LIGHT)
-    canvas.drawString(MARGIN, 8 * mm, "EvalPro — Final Report")
-    canvas.drawRightString(W - MARGIN, 8 * mm, f"Page {len(evaluation.annotation_comments) + 1}")
-
-
-def _draw_standard_param_table(
-    canvas: Canvas, evaluation: EvaluationResult,
-    x: float, y: float, W: float,
+def _draw_margin_box(
+    page, text: str, ann_type: str,
+    x1: float, y1: float, x2: float,
+    colour: tuple,
 ) -> float:
-    """Draw the 5-parameter score table. Returns updated Y."""
-    MARGIN = 20 * mm
-    col_w  = (W - 2 * MARGIN) / 3
-    ROW_H  = 12 * mm
+    """
+    Draw a coloured comment box in the margin.
+    Returns the height of the box drawn.
+    """
+    import fitz
 
-    headers = ["Parameter", "Score", "Feedback"]
-    canvas.setFillColorRGB(*_DARK)
-    canvas.rect(MARGIN, y - ROW_H, W - 2 * MARGIN, ROW_H, fill=1, stroke=0)
-    canvas.setFillColorRGB(1, 1, 1)
-    canvas.setFont("Helvetica-Bold", 8)
-    for i, h in enumerate(headers):
-        canvas.drawString(MARGIN + i * col_w + 4, y - 8, h)
-    y -= ROW_H
+    BG = {
+        "PRAISE":          (0.90, 0.98, 0.93),
+        "CORRECTION":      (0.99, 0.92, 0.92),
+        "STRUCTURAL_NOTE": (0.93, 0.92, 0.99),
+    }.get(ann_type, (0.95, 0.95, 0.99))
 
-    for i, ps in enumerate(evaluation.parameter_scores):
-        row_fill = (1, 1, 1) if i % 2 == 0 else (0.97, 0.97, 0.99)
-        canvas.setFillColorRGB(*row_fill)
-        canvas.rect(MARGIN, y - ROW_H, W - 2 * MARGIN, ROW_H, fill=1, stroke=0)
-        pct_p = ps.score / ps.max_score if ps.max_score else 0
-        s_rgb = _GREEN if pct_p >= 0.75 else (_AMBER if pct_p >= 0.5 else _RED)
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica", 7)
-        canvas.drawString(MARGIN + 4, y - 8, str(ps.parameter))
-        canvas.setFillColorRGB(*s_rgb)
-        canvas.setFont("Helvetica-Bold", 9)
-        canvas.drawString(MARGIN + col_w + 4, y - 8, f"{ps.score}/{ps.max_score}")
-        canvas.setFillColorRGB(*_DARK)
-        canvas.setFont("Helvetica", 6.5)
-        canvas.drawString(MARGIN + col_w * 2 + 4, y - 8, ps.justification[:55])
-        canvas.setStrokeColorRGB(*_LIGHT)
-        canvas.setLineWidth(0.3)
-        canvas.line(MARGIN, y - ROW_H, W - MARGIN, y - ROW_H)
-        y -= ROW_H
-
-    return y
-
-
-# ── Shared helpers ────────────────────────────────────────────────────────────
-
-def _distribute_comments(
-    comments: list[AnnotationComment], num_pages: int
-) -> list[list[AnnotationComment]]:
-    """Distribute annotation comments evenly across pages."""
-    if num_pages <= 0:
-        return []
-    if num_pages == 1:
-        return [comments]
-    per_page: list[list[AnnotationComment]] = [[] for _ in range(num_pages)]
-    for i, comment in enumerate(comments):
-        per_page[i % num_pages].append(comment)
-    return per_page
-
-
-def _pil_to_reportlab(image: Image.Image):
-    """Convert a PIL Image to a reportlab ImageReader."""
-    from reportlab.lib.utils import ImageReader
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=88)
-    buf.seek(0)
-    return ImageReader(buf)
-
-
-def _draw_wrapped_text(
-    canvas: Canvas, text: str,
-    x: float, y: float, max_w: float, font_size: float,
-) -> None:
-    """Draw word-wrapped text using reportlab canvas (no Platypus)."""
+    # Word-wrap text at ~28 chars per line (rough estimate for 6pt font)
     words   = text.split()
     lines   : list[str] = []
     current = ""
-    char_w  = font_size * 0.52   # rough average char width
-
-    for word in words:
-        test = f"{current} {word}".strip()
-        if len(test) * char_w <= max_w:
-            current = test
+    for w in words:
+        candidate = f"{current} {w}".strip()
+        if len(candidate) <= 28:
+            current = candidate
         else:
             if current:
                 lines.append(current)
-            current = word
+            current = w
+    if current:
+        lines.append(current)
+    lines = lines or [""]
+
+    LINE_H  = 9.0
+    box_h   = max(_BOX_MIN_HEIGHT, _MARGIN_PAD * 2 + LINE_H * len(lines))
+    box_rect = fitz.Rect(x1, y1, x2, y1 + box_h)
+
+    # Background
+    page.draw_rect(box_rect, color=None, fill=BG)
+    # Left accent bar
+    page.draw_rect(fitz.Rect(x1, y1, x1 + 3, y1 + box_h),
+                   color=None, fill=colour)
+
+    # Text lines
+    for i, line in enumerate(lines):
+        page.insert_text(
+            fitz.Point(x1 + 6, y1 + _MARGIN_PAD + LINE_H * (i + 0.75)),
+            line,
+            fontsize=6, color=_DARK, fontname="helv",
+        )
+
+    return box_h
+
+
+def _draw_wavy_underline(
+    page, x1: float, y: float, x2: float, colour: tuple
+) -> None:
+    """Approximate wavy underline with short alternating diagonal segments."""
+    import fitz
+    amplitude = 2.5
+    period    = 8.0
+    x = x1
+    toggle = 1
+    while x < x2 - period:
+        nx = min(x + period, x2)
+        ny = y + amplitude * toggle
+        page.draw_line(fitz.Point(x, y), fitz.Point(nx, ny),
+                       color=colour, width=1.0)
+        toggle = -toggle
+        x = nx
+
+
+# ── Score sheet page ──────────────────────────────────────────────────────────
+
+def _add_score_sheet(
+    doc,
+    evaluation: EvaluationResult,
+    question: str | None,
+    exam_type: str,
+    job_id: str,
+) -> None:
+    """Append the final score sheet page (Roundtable IAS style)."""
+    import fitz
+
+    page = doc.new_page(width=595, height=842)
+    W, H = 595, 842
+    MARGIN = 25.0
+    now = datetime.now(tz=timezone.utc).strftime("%d %b %Y")
+
+    total   = evaluation.score_summary.total_score
+    max_s   = evaluation.score_summary.max_score
+    grade   = evaluation.score_summary.grade
+    pct     = total / max_s if max_s else 0
+    g_colour = (
+        _GREEN  if pct >= 0.8 else
+        _VIOLET if pct >= 0.6 else
+        _AMBER  if pct >= 0.4 else
+        _RED
+    )
+
+    # ── Header bar ────────────────────────────────────────────────────────
+    page.draw_rect(fitz.Rect(0, 0, W, 36), color=None, fill=_VIOLET)
+    page.insert_text(fitz.Point(MARGIN, 11),
+                     "ROUNDTABLE IAS  ·  ESSAY MENTORSHIP CELL",
+                     fontsize=8, color=_WHITE, fontname="helv")
+    page.insert_text(fitz.Point(MARGIN, 26),
+                     "Essay Evaluation Sheet",
+                     fontsize=13, color=_WHITE, fontname="helv")
+    page.insert_text(fitz.Point(W - 130, 11),
+                     f"Paper: Essay  ·  Word limit: 1200",
+                     fontsize=6, color=_WHITE, fontname="helv")
+    page.insert_text(fitz.Point(W - 90, 21),
+                     f"Evaluated: {now}",
+                     fontsize=6, color=_WHITE, fontname="helv")
+
+    y = 50.0
+
+    # ── Topic block ───────────────────────────────────────────────────────
+    topic = (question or exam_type or "Essay")[:110]
+    page.draw_rect(fitz.Rect(MARGIN, y, W - MARGIN, y + 22),
+                   color=_VIOLET, fill=(0.94, 0.94, 0.98), width=0.4)
+    page.insert_text(fitz.Point(MARGIN + 4, y + 7),
+                     "TOPIC", fontsize=6, color=_VIOLET, fontname="helv")
+    page.insert_text(fitz.Point(MARGIN + 4, y + 17),
+                     f'"{topic}"',
+                     fontsize=7.5, color=_DARK, fontname="helv")
+    y += 28.0
+
+    # ── Score hero ────────────────────────────────────────────────────────
+    page.draw_rect(fitz.Rect(MARGIN, y, W - MARGIN, y + 40),
+                   color=None, fill=(0.97, 0.97, 0.99))
+    page.insert_text(fitz.Point(MARGIN + 8, y + 28),
+                     str(total),
+                     fontsize=32, color=g_colour, fontname="helv")
+    page.insert_text(fitz.Point(MARGIN + 46, y + 28),
+                     f"/ {max_s}",
+                     fontsize=14, color=_LIGHT, fontname="helv")
+    page.insert_text(fitz.Point(W - MARGIN - 30, y + 32),
+                     grade,
+                     fontsize=36, color=g_colour, fontname="helv")
+    page.insert_text(fitz.Point(MARGIN + 100, y + 20),
+                     evaluation.score_summary.performance_status,
+                     fontsize=9, color=g_colour, fontname="helv")
+    y += 48.0
+
+    # ── Parameter breakdown table ─────────────────────────────────────────
+    y = _draw_parameter_table(page, evaluation.parameter_breakdown, y, W, MARGIN)
+    y += 8.0
+
+    # ── Overall remarks ───────────────────────────────────────────────────
+    if evaluation.overall_evaluation.summary_remarks and y < H - 80:
+        page.insert_text(fitz.Point(MARGIN, y + 8),
+                         "OVERALL REMARKS",
+                         fontsize=7, color=_VIOLET, fontname="helv")
+        y += 12.0
+        remark = evaluation.overall_evaluation.summary_remarks
+        y = _insert_wrapped_text(page, remark, MARGIN + 2, y,
+                                  W - MARGIN - 2, fontsize=7,
+                                  colour=_DARK, bg=(0.97, 0.95, 1.0))
+        y += 8.0
+
+    # ── Before You Resubmit ───────────────────────────────────────────────
+    checklist = evaluation.overall_evaluation.actionable_resubmission_checklist
+    if checklist and y < H - 50:
+        # Dashed separator
+        page.draw_line(fitz.Point(MARGIN, y), fitz.Point(W - MARGIN, y),
+                       color=_LIGHT, width=0.4, dashes="[3 3]")
+        y += 8.0
+        page.insert_text(fitz.Point(MARGIN, y + 7),
+                         "BEFORE YOU RESUBMIT",
+                         fontsize=7.5, color=_DARK, fontname="helv")
+        y += 14.0
+
+        col_w  = (W - 2 * MARGIN - 8) / 2
+        mid    = (len(checklist) + 1) // 2
+        left   = checklist[:mid]
+        right  = checklist[mid:]
+        row_h  = 18.0
+        base_y = y
+
+        for i, item in enumerate(left):
+            cy = base_y + i * row_h
+            # Circle number badge
+            page.draw_circle(fitz.Point(MARGIN + 6, cy + 5), 5,
+                              color=None, fill=_VIOLET)
+            page.insert_text(fitz.Point(MARGIN + 3.5, cy + 8),
+                              str(i + 1),
+                              fontsize=5, color=_WHITE, fontname="helv")
+            _insert_wrapped_text(page, item[:90],
+                                  MARGIN + 14, cy + 2,
+                                  col_w - 14, fontsize=6.5, colour=_DARK)
+
+        for j, item in enumerate(right):
+            cy = base_y + j * row_h
+            rx = MARGIN + col_w + 8
+            page.draw_circle(fitz.Point(rx + 6, cy + 5), 5,
+                              color=None, fill=_VIOLET)
+            page.insert_text(fitz.Point(rx + 3.5, cy + 8),
+                              str(mid + j + 1),
+                              fontsize=5, color=_WHITE, fontname="helv")
+            _insert_wrapped_text(page, item[:90],
+                                  rx + 14, cy + 2,
+                                  col_w - 14, fontsize=6.5, colour=_DARK)
+
+    # ── Footer ────────────────────────────────────────────────────────────
+    page.insert_text(fitz.Point(MARGIN, H - 10),
+                     "theroundtableias.com",
+                     fontsize=6, color=_LIGHT, fontname="helv")
+    page.insert_text(fitz.Point(W - 120, H - 10),
+                     "RoundtableIAS  ·  YouTube",
+                     fontsize=6, color=_LIGHT, fontname="helv")
+
+
+def _draw_parameter_table(
+    page,
+    params: list[ParameterBreakdown],
+    y: float,
+    W: float,
+    MARGIN: float,
+) -> float:
+    """Draw the parameter rubric table. Returns updated y."""
+    import fitz
+
+    if not params:
+        return y
+
+    COL_PARAM  = (W - 2 * MARGIN) * 0.40
+    COL_MAX    = (W - 2 * MARGIN) * 0.09
+    COL_MARKS  = (W - 2 * MARGIN) * 0.10
+    COL_REMARK = (W - 2 * MARGIN) * 0.41
+    ROW_H      = 13.0
+
+    # Header row
+    page.draw_rect(fitz.Rect(MARGIN, y, W - MARGIN, y + ROW_H),
+                   color=None, fill=_DARK)
+    hx = MARGIN + 3
+    for label, cx in [
+        ("PARAMETER",        hx),
+        ("MAX",              hx + COL_PARAM),
+        ("MARKS",            hx + COL_PARAM + COL_MAX),
+        ("EXAMINER'S REMARK", hx + COL_PARAM + COL_MAX + COL_MARKS),
+    ]:
+        page.insert_text(fitz.Point(cx, y + ROW_H - 4),
+                         label, fontsize=6, color=_WHITE, fontname="helv")
+    y += ROW_H
+
+    for i, pb in enumerate(params):
+        fill = _WHITE if i % 2 == 0 else (0.97, 0.97, 0.99)
+        page.draw_rect(fitz.Rect(MARGIN, y, W - MARGIN, y + ROW_H),
+                       color=None, fill=fill)
+
+        pct_p  = pb.marks_obtained / pb.max_marks if pb.max_marks else 0
+        s_col  = _GREEN if pct_p >= 0.75 else (_AMBER if pct_p >= 0.5 else _RED)
+        rx     = MARGIN + 3
+
+        page.insert_text(fitz.Point(rx, y + ROW_H - 4),
+                         pb.parameter_name[:38],
+                         fontsize=6, color=_DARK, fontname="helv")
+        page.insert_text(fitz.Point(rx + COL_PARAM, y + ROW_H - 4),
+                         str(pb.max_marks),
+                         fontsize=6, color=_DARK, fontname="helv")
+        page.insert_text(fitz.Point(rx + COL_PARAM + COL_MAX, y + ROW_H - 4),
+                         str(pb.marks_obtained),
+                         fontsize=7, color=s_col, fontname="helv")
+        page.insert_text(
+            fitz.Point(rx + COL_PARAM + COL_MAX + COL_MARKS, y + ROW_H - 4),
+            pb.examiner_remark[:55],
+            fontsize=6, color=_DARK, fontname="helv",
+        )
+
+        # Row border
+        page.draw_line(fitz.Point(MARGIN, y + ROW_H),
+                       fitz.Point(W - MARGIN, y + ROW_H),
+                       color=_LIGHT, width=0.2)
+        y += ROW_H
+
+    # Total row
+    total = sum(pb.marks_obtained for pb in params)
+    max_t = sum(pb.max_marks for pb in params)
+    pct   = total / max_t if max_t else 0
+    g_col = _GREEN if pct >= 0.8 else _VIOLET if pct >= 0.6 else _AMBER if pct >= 0.4 else _RED
+
+    page.draw_rect(fitz.Rect(MARGIN, y, W - MARGIN, y + ROW_H + 2),
+                   color=None, fill=_DARK)
+    page.insert_text(fitz.Point(MARGIN + 3, y + ROW_H - 2),
+                     "TOTAL SCORE",
+                     fontsize=7, color=_WHITE, fontname="helv")
+    page.insert_text(fitz.Point(W - MARGIN - 55, y + ROW_H - 2),
+                     f"{total} / {max_t}",
+                     fontsize=10, color=g_col, fontname="helv")
+    return y + ROW_H + 6
+
+
+# ── Text helpers ──────────────────────────────────────────────────────────────
+
+def _insert_wrapped_text(
+    page,
+    text: str,
+    x: float, y: float,
+    max_w: float,
+    fontsize: float = 7,
+    colour: tuple = _DARK,
+    bg: tuple | None = None,
+) -> float:
+    """
+    Insert word-wrapped text into the page.
+    Returns the y coordinate after the last line.
+    """
+    import fitz
+
+    chars_per_line = max(10, int(max_w / (fontsize * 0.52)))
+    words  = text.split()
+    lines  : list[str] = []
+    current = ""
+    for w in words:
+        cand = f"{current} {w}".strip()
+        if len(cand) <= chars_per_line:
+            current = cand
+        else:
+            if current:
+                lines.append(current)
+            current = w
     if current:
         lines.append(current)
 
-    line_h = font_size * 1.35
+    LINE_H = fontsize * 1.4
+    total_h = LINE_H * len(lines) + 4
+
+    if bg:
+        page.draw_rect(fitz.Rect(x - 2, y - 2, x + max_w + 2, y + total_h),
+                       color=None, fill=bg)
+
     for i, line in enumerate(lines):
-        canvas.drawString(x, y - i * line_h, line)
+        page.insert_text(
+            fitz.Point(x, y + fontsize + i * LINE_H),
+            line, fontsize=fontsize, color=colour, fontname="helv",
+        )
+
+    return y + total_h
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _annotation_colour(ann: PageAnnotation) -> tuple:
+    return {
+        "PRAISE":          _GREEN,
+        "CORRECTION":      _RED,
+        "STRUCTURAL_NOTE": _VIOLET,
+    }.get(ann.annotation_type, _BLUE)
+
+
+def _annotation_symbol(ann: PageAnnotation) -> str:
+    if ann.mark_symbol == "TICK"  or ann.annotation_type == "PRAISE":
+        return "✓"
+    if ann.mark_symbol == "CROSS" or ann.annotation_type == "CORRECTION":
+        return "✗"
+    return "•"
+
+
+def _pil_to_jpeg_bytes(pil_img) -> bytes:
+    buf = io.BytesIO()
+    pil_img.convert("RGB").save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
+# ── ReportLab fallback (when PyMuPDF is not installed) ───────────────────────
+
+def _build_fallback_pdf(
+    page_images: list,
+    evaluation: EvaluationResult,
+    question: str | None,
+    exam_type: str,
+    job_id: str,
+) -> bytes:
+    """
+    Minimal fallback using ReportLab when PyMuPDF is not available.
+    Just embeds the page images + a basic score sheet.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen.canvas import Canvas
+    from reportlab.lib.utils import ImageReader
+
+    buf = io.BytesIO()
+    c   = Canvas(buf, pagesize=A4)
+    W, H = A4
+
+    for pil_img in page_images:
+        img_buf = io.BytesIO()
+        pil_img.convert("RGB").save(img_buf, format="JPEG", quality=88)
+        img_buf.seek(0)
+        c.drawImage(ImageReader(img_buf), 0, 0, width=W, height=H,
+                    preserveAspectRatio=True)
+        c.showPage()
+
+    # Minimal score page
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, H - 60, "Evaluation Score Sheet")
+    c.setFont("Helvetica", 12)
+    c.drawString(50, H - 90,
+                 f"Score: {evaluation.score_summary.total_score} / "
+                 f"{evaluation.score_summary.max_score}  "
+                 f"Grade: {evaluation.score_summary.grade}")
+    c.drawString(50, H - 110, evaluation.score_summary.performance_status)
+    y = H - 140
+    for pb in evaluation.parameter_breakdown:
+        c.setFont("Helvetica", 9)
+        c.drawString(50, y,
+                     f"{pb.parameter_name}: {pb.marks_obtained}/{pb.max_marks}"
+                     f"  — {pb.examiner_remark[:60]}")
+        y -= 14
+        if y < 60:
+            c.showPage()
+            y = H - 60
+    c.showPage()
+    c.save()
+    return buf.getvalue()
