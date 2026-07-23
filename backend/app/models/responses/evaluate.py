@@ -1,22 +1,46 @@
 """
 Pydantic response schemas for the /evaluate endpoint.
-Matches the master JSON schema from the Vision agent.
+Matches the teacher-evaluation JSON schema from the Vision agent.
 """
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from app.core.constants import RubricParameter
 
 
-# ── Master-schema output types ────────────────────────────────────────────────
+# ── Primary: teacher-evaluation schema ───────────────────────────────────────
 
-class DocumentSummaryOut(BaseModel):
-    total_pages: int = 1
-    estimated_word_count: int = 0
-    target_word_count: int = 1200
-    transcription_status: str = "SUCCESS"
+class RubricItemOut(BaseModel):
+    marks: int
+    max: int
+    remark: str = ""
+
+
+class TeacherAnnotationOut(BaseModel):
+    page: int
+    paragraph: int
+    sentence: int | None = None
+    annotation_type: str         # tick | cross | circle | underline | comment
+    comment: str
+
+
+class EvaluationSummaryOut(BaseModel):
+    student_name: str = ""
+    subject: str = ""
     has_handwritten_content: bool = True
     transcribed_text: str = ""
+    total_marks: int
+    max_marks: int = 100
+    grade: str = "D"
+    performance_level: str = "Needs Improvement"
+    rubric: dict[str, RubricItemOut] = Field(default_factory=dict)
+    strengths: list[str] = Field(default_factory=list)
+    weaknesses: list[str] = Field(default_factory=list)
+    remarks: str = ""
+    annotations: list[TeacherAnnotationOut] = Field(default_factory=list)
+    total_pages: int = 1
 
+
+# ── Legacy schema types (kept for backward compat) ────────────────────────────
 
 class ScoreSummaryOut(BaseModel):
     total_score: int
@@ -24,34 +48,6 @@ class ScoreSummaryOut(BaseModel):
     grade: str = "D"
     performance_status: str = "Needs Work"
 
-
-class AnnotationLocationOut(BaseModel):
-    y_percent: float = 50.0
-    position: str = "RIGHT_MARGIN"
-
-
-class PageAnnotationOut(BaseModel):
-    annotation_type: str
-    target_snippet: str
-    mark_symbol: str
-    annotation_text: str
-    location: AnnotationLocationOut
-    page_number: int = 1
-
-
-class ParameterBreakdownOut(BaseModel):
-    parameter_name: str
-    marks_obtained: int
-    max_marks: int
-    examiner_remark: str
-
-
-class OverallEvaluationOut(BaseModel):
-    summary_remarks: str = ""
-    actionable_resubmission_checklist: list[str] = Field(default_factory=list)
-
-
-# ── Legacy output types (kept for backward compat with standard/essay paths) ──
 
 class ParameterScoreOut(BaseModel):
     parameter: RubricParameter
@@ -75,41 +71,25 @@ class AnnotationCommentOut(BaseModel):
     sentiment: str
 
 
-# ── Top-level evaluation result ───────────────────────────────────────────────
-
-class EvaluationResultOut(BaseModel):
-    # Master-schema fields
-    document_summary: DocumentSummaryOut = Field(
-        default_factory=DocumentSummaryOut
-    )
-    score_summary: ScoreSummaryOut
-    page_annotations: list[PageAnnotationOut] = Field(default_factory=list)
-    parameter_breakdown: list[ParameterBreakdownOut] = Field(default_factory=list)
-    overall_evaluation: OverallEvaluationOut = Field(
-        default_factory=OverallEvaluationOut
-    )
-
-    # Legacy rubric fields (populated for non-handwritten fallback path)
-    parameter_scores: list[ParameterScoreOut] = Field(default_factory=list)
-    essay_parameter_scores: list[EssayParameterScoreOut] = Field(default_factory=list)
-    before_resubmit: list[str] = Field(default_factory=list)
-
-    # Shared
-    exam_type: str = "Custom / General"
-    strengths: list[str] = Field(default_factory=list)
-    improvements: list[str] = Field(default_factory=list)
-
-
-# ── Top-level API response ────────────────────────────────────────────────────
+# ── Top-level response ────────────────────────────────────────────────────────
 
 class EvaluateResponse(BaseModel):
     job_id: str
     original_file_url: str
-    annotated_file_url: str     # URL to the checked PDF (or JPEG for legacy)
+    annotated_file_url: str      # URL to the checked PDF
     report_url: str
-    extracted_text: str         # full transcribed handwritten text
+    extracted_text: str          # full transcribed handwritten text
     word_count: int
     ocr_low_confidence: bool
-    evaluation: EvaluationResultOut
-    # Legacy flat list kept so existing frontend clients don't break
+
+    # Primary evaluation result (always populated for handwritten uploads)
+    evaluation_summary: EvaluationSummaryOut
+
+    # Legacy annotation comments (kept for frontend compat)
     annotation_comments: list[AnnotationCommentOut] = Field(default_factory=list)
+
+    # Legacy flat score fields (kept for frontend compat)
+    total_marks: int = 0
+    max_marks: int = 100
+    grade: str = "D"
+    performance_level: str = "Needs Improvement"

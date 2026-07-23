@@ -1,8 +1,12 @@
 """
-Maps the raw Vision agent JSON (master schema) → EvaluationResult domain object.
+Maps raw Vision agent JSON → EvaluationResult domain object.
 
-Also handles the legacy LLM-only JSON (standard 5-param / essay 12-param)
-for non-handwritten uploads that fall back to the text eval path.
+PRIMARY PATH  (teacher-evaluation schema from Vision agent):
+  map_vision_result(data, exam_type) → EvaluationResult
+  Schema: {student_name, subject, total_marks, grade, rubric{}, annotations[]}
+
+LEGACY PATH  (text-LLM fallback — standard 5-param or essay 12-param):
+  map_llm_response_to_result(data, exam_type) → EvaluationResult
 """
 from __future__ import annotations
 
@@ -11,6 +15,10 @@ from app.core.exceptions import EvaluationError
 from app.core.logging import get_logger
 from app.models.domain.evaluation import (
     EvaluationResult,
+    EvaluationSummary,
+    RubricItem,
+    TeacherAnnotation,
+    # Legacy types
     DocumentSummary,
     ScoreSummary,
     PageAnnotation,
@@ -24,171 +32,219 @@ from app.models.domain.evaluation import (
 
 logger = get_logger(__name__)
 
+# ── CBSE 9-parameter rubric defaults ─────────────────────────────────────────
+_RUBRIC_DEFAULTS: dict[str, int] = {
+    "introduction": 5,
+    "content":      20,
+    "grammar":      10,
+    "vocabulary":   10,
+    "presentation": 10,
+    "handwriting":  20,
+    "conclusion":   5,
+    "creativity":   10,
+    "flow":         10,
+}
+
+_VALID_ANNOTATION_TYPES = {"tick", "cross", "circle", "underline", "comment"}
 _ESSAY_EXAM_TYPE = "Essay"
 
 
-# ── Primary mapper — master Vision JSON ──────────────────────────────────────
+# ── Primary mapper ────────────────────────────────────────────────────────────
 
-def map_vision_result(data: dict, exam_type: str = "Custom / General") -> EvaluationResult:
+def map_vision_result(
+    data: dict,
+    exam_type: str = "Custom / General",
+) -> EvaluationResult:
     """
-    Map the master-schema JSON from run_vision_evaluation() → EvaluationResult.
-    This is the primary path for all handwritten PDF submissions.
+    Map the teacher-evaluation JSON from run_vision_evaluation() → EvaluationResult.
+    This is the primary path for all handwritten uploads.
     """
-    doc   = _map_document_summary(data.get("document_summary", {}))
-    score = _map_score_summary(data.get("score_summary", {}))
-    pages = _map_page_annotations(data.get("page_annotations", []))
-    params = _map_parameter_breakdown(data.get("parameter_breakdown", []))
-    overall = _map_overall_evaluation(data.get("overall_evaluation", {}))
+    summary = _map_evaluation_summary(data)
+    total_pages = int(data.get("total_pages", 1))
+    summary.total_pages = total_pages
 
-    # Build legacy AnnotationComment list from page_annotations so the
-    # existing image-annotation pipeline (comment boxes, ticks) still works.
-    legacy_comments = _page_annotations_to_legacy_comments(pages)
+    # Build legacy AnnotationComment list from TeacherAnnotations so the
+    # old PIL pipeline can still render something if PyMuPDF is unavailable.
+    legacy_comments = _teacher_annotations_to_legacy_comments(summary.annotations)
 
-    # Build before_resubmit from checklist
-    before_resubmit = overall.actionable_resubmission_checklist
-
-    # Build strengths / improvements from PRAISE / CORRECTION annotations
-    strengths = [
-        a.annotation_text for a in pages
-        if a.annotation_type == "PRAISE"
-    ][:3]
-    improvements = [
-        a.annotation_text for a in pages
-        if a.annotation_type in ("CORRECTION", "STRUCTURAL_NOTE")
-    ][:3]
+    # Build legacy page_annotations from TeacherAnnotations
+    legacy_page_anns = _teacher_annotations_to_page_annotations(summary.annotations)
 
     return EvaluationResult(
-        document_summary=doc,
-        score_summary=score,
-        page_annotations=pages,
-        parameter_breakdown=params,
-        overall_evaluation=overall,
+        evaluation_summary=summary,
         annotation_comments=legacy_comments,
-        before_resubmit=before_resubmit,
+        page_annotations=legacy_page_anns,
         exam_type=exam_type,
-        strengths=strengths,
-        improvements=improvements,
+        strengths=summary.strengths[:4],
+        improvements=summary.weaknesses[:4],
+        score_summary=ScoreSummary(
+            total_score=summary.total_marks,
+            max_score=summary.max_marks,
+            grade=summary.grade,
+            performance_status=summary.performance_level,
+        ),
+        overall_evaluation=OverallEvaluation(
+            summary_remarks=summary.remarks,
+            actionable_resubmission_checklist=summary.weaknesses[:5],
+        ),
+        document_summary=DocumentSummary(
+            total_pages=total_pages,
+            transcribed_text=summary.transcribed_text,
+            has_handwritten_content=summary.has_handwritten_content,
+        ),
     )
 
 
-def _map_document_summary(raw: dict) -> DocumentSummary:
-    return DocumentSummary(
-        total_pages=int(raw.get("total_pages", 1)),
-        estimated_word_count=int(raw.get("estimated_word_count", 0)),
-        target_word_count=int(raw.get("target_word_count", 1200)),
-        transcription_status=str(raw.get("transcription_status", "SUCCESS")),
-        has_handwritten_content=bool(raw.get("has_handwritten_content", True)),
-        transcribed_text=str(raw.get("transcribed_text", "")),
-    )
+def _map_evaluation_summary(data: dict) -> EvaluationSummary:
+    total = _clamp(data.get("total_marks", 0), 0, 200)
+    max_m = int(data.get("max_marks", 100)) or 100
+    pct   = total / max_m
 
-
-def _map_score_summary(raw: dict) -> ScoreSummary:
-    total = _clamp(raw.get("total_score", 0), 0, 200)
-    max_s = int(raw.get("max_score", 100)) or 100
-    pct   = total / max_s
-    # Compute grade from score if not provided
-    grade = str(raw.get("grade", ""))
+    grade = str(data.get("grade", "")).strip()
     if not grade:
-        grade = "A" if pct >= 0.8 else "B" if pct >= 0.6 else "C" if pct >= 0.4 else "D"
-    perf = str(raw.get("performance_status", ""))
+        grade = _compute_grade(pct)
+
+    perf = str(data.get("performance_level", "")).strip()
     if not perf:
-        perf = ("Excellent" if pct >= 0.8 else "Strong Draft"
-                if pct >= 0.6 else "Needs Work")
-    return ScoreSummary(
-        total_score=total,
-        max_score=max_s,
+        perf = _compute_performance(pct)
+
+    rubric = _map_rubric(data.get("rubric", {}))
+
+    # If rubric total doesn't match total_marks, use rubric total
+    rubric_total = sum(item.marks for item in rubric.values())
+    if rubric_total > 0 and abs(rubric_total - total) > 5:
+        logger.warning("rubric_total_mismatch",
+                       rubric_total=rubric_total, reported_total=total)
+        total = rubric_total
+
+    annotations = _map_annotations(data.get("annotations", []))
+
+    return EvaluationSummary(
+        student_name=str(data.get("student_name", "")).strip()[:100],
+        subject=str(data.get("subject", "")).strip()[:100],
+        has_handwritten_content=bool(data.get("has_handwritten_content", True)),
+        transcribed_text=str(data.get("transcribed_text", ""))[:8000],
+        total_marks=total,
+        max_marks=max_m,
         grade=grade,
-        performance_status=perf,
+        performance_level=perf,
+        rubric=rubric,
+        strengths=_safe_str_list(data.get("strengths", []), max_items=5),
+        weaknesses=_safe_str_list(data.get("weaknesses", []), max_items=5),
+        remarks=str(data.get("remarks", "")).strip()[:500],
+        annotations=annotations,
     )
 
 
-def _map_page_annotations(raw_pages: list) -> list[PageAnnotation]:
-    result: list[PageAnnotation] = []
-    for page_block in raw_pages:
-        page_num = int(page_block.get("page_number", 1))
-        for ann in page_block.get("annotations", []):
-            loc_raw = ann.get("location", {})
-            loc = AnnotationLocation(
-                y_percent=float(loc_raw.get("y_percent", 50)),
-                position=str(loc_raw.get("position", "RIGHT_MARGIN")),
-            )
-            result.append(PageAnnotation(
-                annotation_type=str(ann.get("type", "STRUCTURAL_NOTE")),
-                target_snippet=str(ann.get("target_snippet", ""))[:200],
-                mark_symbol=str(ann.get("mark_symbol", "MARGIN_BOX")),
-                annotation_text=str(ann.get("annotation_text", ""))[:120],
-                location=loc,
-                page_number=page_num,
-            ))
+def _map_rubric(raw: dict) -> dict[str, RubricItem]:
+    result: dict[str, RubricItem] = {}
+    for key, default_max in _RUBRIC_DEFAULTS.items():
+        raw_item = raw.get(key, {})
+        if isinstance(raw_item, dict):
+            marks  = _clamp(raw_item.get("marks", 0), 0, default_max)
+            max_v  = int(raw_item.get("max", default_max))
+            remark = str(raw_item.get("remark", "")).strip()[:150]
+        else:
+            marks  = _clamp(raw_item, 0, default_max)
+            max_v  = default_max
+            remark = ""
+        result[key] = RubricItem(marks=marks, max=max_v, remark=remark)
     return result
 
 
-def _map_parameter_breakdown(raw: list) -> list[ParameterBreakdown]:
-    result: list[ParameterBreakdown] = []
+def _map_annotations(raw: list) -> list[TeacherAnnotation]:
+    result: list[TeacherAnnotation] = []
     for item in raw:
-        max_m = int(item.get("max_marks", 10))
-        obtained = _clamp(item.get("marks_obtained", 0), 0, max_m)
-        result.append(ParameterBreakdown(
-            parameter_name=str(item.get("parameter_name", ""))[:80],
-            marks_obtained=obtained,
-            max_marks=max_m,
-            examiner_remark=str(item.get("examiner_remark", ""))[:120],
+        if not isinstance(item, dict):
+            continue
+        ann_type = str(item.get("type", "comment")).lower().strip()
+        if ann_type not in _VALID_ANNOTATION_TYPES:
+            ann_type = "comment"
+        comment = str(item.get("comment", "")).strip()[:80]
+        if not comment:
+            continue
+        page      = max(1, int(item.get("page", 1)))
+        paragraph = max(1, int(item.get("paragraph", 1)))
+        sentence_raw = item.get("sentence")
+        sentence = max(1, int(sentence_raw)) if sentence_raw is not None else None
+        result.append(TeacherAnnotation(
+            page=page,
+            paragraph=paragraph,
+            annotation_type=ann_type,
+            comment=comment,
+            sentence=sentence,
         ))
     return result
 
 
-def _map_overall_evaluation(raw: dict) -> OverallEvaluation:
-    checklist = [
-        str(s)[:150] for s in raw.get("actionable_resubmission_checklist", [])
-        if s and str(s).strip()
-    ][:5]
-    return OverallEvaluation(
-        summary_remarks=str(raw.get("summary_remarks", ""))[:600],
-        actionable_resubmission_checklist=checklist,
-    )
+# ── Legacy converters ─────────────────────────────────────────────────────────
 
-
-def _page_annotations_to_legacy_comments(
-    annotations: list[PageAnnotation],
+def _teacher_annotations_to_legacy_comments(
+    annotations: list[TeacherAnnotation],
 ) -> list[AnnotationComment]:
-    """
-    Convert PageAnnotation list → legacy AnnotationComment list.
-    paragraph_index is approximated from y_percent (0–100 → 0–9).
-    sentiment is derived from annotation_type.
-    """
-    SENTIMENT_MAP = {
-        "PRAISE":          "positive",
-        "CORRECTION":      "negative",
-        "STRUCTURAL_NOTE": "neutral",
+    """Convert TeacherAnnotation → AnnotationComment for the old PIL pipeline."""
+    SENTIMENT = {
+        "tick":      "positive",
+        "underline": "positive",
+        "cross":     "negative",
+        "circle":    "negative",
+        "comment":   "neutral",
     }
     result: list[AnnotationComment] = []
     for ann in annotations:
-        para_idx = max(0, int(ann.location.y_percent / 10))
-        sentiment = SENTIMENT_MAP.get(ann.annotation_type, "neutral")
+        # Approximate paragraph_index from paragraph number (0-based)
+        para_idx = max(0, ann.paragraph - 1)
         result.append(AnnotationComment(
             paragraph_index=para_idx,
-            comment_text=ann.annotation_text[:100],
-            sentiment=sentiment,
+            comment_text=ann.comment[:100],
+            sentiment=SENTIMENT.get(ann.annotation_type, "neutral"),
         ))
     return result
 
 
-# ── Legacy mapper — text-only LLM JSON (standard 5-param / essay 12-param) ───
+def _teacher_annotations_to_page_annotations(
+    annotations: list[TeacherAnnotation],
+) -> list[PageAnnotation]:
+    """Convert TeacherAnnotation → legacy PageAnnotation (y_percent approximated)."""
+    TYPE_MAP = {
+        "tick":      ("PRAISE",          "TICK"),
+        "cross":     ("CORRECTION",      "CROSS"),
+        "circle":    ("CORRECTION",      "CIRCLE"),
+        "underline": ("PRAISE",          "UNDERLINE"),
+        "comment":   ("STRUCTURAL_NOTE", "MARGIN_BOX"),
+    }
+    result: list[PageAnnotation] = []
+    for ann in annotations:
+        ann_type, mark_sym = TYPE_MAP.get(ann.annotation_type, ("STRUCTURAL_NOTE", "MARGIN_BOX"))
+        # Approximate y_percent from paragraph (assume ~10 paragraphs per page)
+        y_pct = min(95.0, (ann.paragraph - 1) * 10.0 + 5.0)
+        result.append(PageAnnotation(
+            annotation_type=ann_type,
+            target_snippet="",
+            mark_symbol=mark_sym,
+            annotation_text=ann.comment,
+            location=AnnotationLocation(y_percent=y_pct, position="RIGHT_MARGIN"),
+            page_number=ann.page,
+        ))
+    return result
+
+
+# ── Legacy LLM mapper (text PDF fallback) ────────────────────────────────────
 
 def map_llm_response_to_result(
     data: dict,
     exam_type: str = "Custom / General",
 ) -> EvaluationResult:
     """
-    Legacy path: map the Groq text-eval JSON → EvaluationResult.
-    Used as fallback when the upload is a typed/text PDF (not handwritten).
+    Legacy path: map Groq text-eval JSON → EvaluationResult.
+    Used when the upload is a typed/text PDF with no handwritten content.
     """
     annotation_comments = _map_legacy_annotation_comments(
         data.get("annotation_comments", [])
     )
     overall_remark = _require_string(data, "overall_remark")
-    strengths      = _safe_string_list(data.get("strengths", []))
-    improvements   = _safe_string_list(data.get("improvements", []))
+    strengths      = _safe_str_list(data.get("strengths", []))
+    improvements   = _safe_str_list(data.get("improvements", []))
 
     if exam_type == _ESSAY_EXAM_TYPE:
         return _map_essay_result(
@@ -207,17 +263,28 @@ def _map_standard_result(
     parameter_scores = _map_parameter_scores(data.get("parameter_scores", []))
     total = sum(p.score for p in parameter_scores)
     pct   = total / 50
-    grade = "A" if pct >= 0.8 else "B" if pct >= 0.6 else "C" if pct >= 0.4 else "D"
+    grade = _compute_grade_legacy(pct)
     return EvaluationResult(
         parameter_scores=parameter_scores,
         annotation_comments=annotation_comments,
-        before_resubmit=_safe_string_list(data.get("before_resubmit", []), max_items=5),
+        before_resubmit=_safe_str_list(
+            data.get("before_resubmit", []), max_items=5
+        ),
         exam_type=exam_type,
         strengths=strengths,
         improvements=improvements,
-        score_summary=ScoreSummary(total_score=total, max_score=50, grade=grade),
+        score_summary=ScoreSummary(
+            total_score=total, max_score=50, grade=grade
+        ),
         overall_evaluation=OverallEvaluation(summary_remarks=overall_remark),
         document_summary=DocumentSummary(transcribed_text=""),
+        evaluation_summary=EvaluationSummary(
+            has_handwritten_content=False,
+            total_marks=total,
+            max_marks=50,
+            grade=grade,
+            remarks=overall_remark,
+        ),
     )
 
 
@@ -225,12 +292,12 @@ def _map_essay_result(
     data, overall_remark, annotation_comments, strengths, improvements, exam_type,
 ) -> EvaluationResult:
     essay_scores    = _map_essay_parameter_scores(data.get("parameter_scores", []))
-    before_resubmit = _safe_string_list(
+    before_resubmit = _safe_str_list(
         data.get("before_resubmit", []), max_len=150, max_items=6
     )
     total = sum(p.score for p in essay_scores)
     pct   = total / 100
-    grade = "A" if pct >= 0.8 else "B" if pct >= 0.6 else "C" if pct >= 0.4 else "D"
+    grade = _compute_grade_legacy(pct)
     return EvaluationResult(
         essay_parameter_scores=essay_scores,
         before_resubmit=before_resubmit,
@@ -238,18 +305,27 @@ def _map_essay_result(
         exam_type=exam_type,
         strengths=strengths,
         improvements=improvements,
-        score_summary=ScoreSummary(total_score=total, max_score=100, grade=grade),
+        score_summary=ScoreSummary(
+            total_score=total, max_score=100, grade=grade
+        ),
         overall_evaluation=OverallEvaluation(
             summary_remarks=overall_remark,
             actionable_resubmission_checklist=before_resubmit,
         ),
         document_summary=DocumentSummary(transcribed_text=""),
+        evaluation_summary=EvaluationSummary(
+            has_handwritten_content=False,
+            total_marks=total,
+            max_marks=100,
+            grade=grade,
+            remarks=overall_remark,
+        ),
     )
 
 
 def _map_parameter_scores(raw: list) -> list[ParameterScore]:
     known = {p.value: p for p in RubricParameter}
-    scores = []
+    scores: list[ParameterScore] = []
     for item in raw:
         name = item.get("parameter", "")
         if name not in known:
@@ -260,7 +336,7 @@ def _map_parameter_scores(raw: list) -> list[ParameterScore]:
             score=_clamp(item.get("score", 0), 0, 10),
             max_score=10,
             justification=str(item.get("justification", ""))[:300],
-            suggestions=_safe_string_list(item.get("suggestions", [])),
+            suggestions=_safe_str_list(item.get("suggestions", [])),
         ))
     if not scores:
         raise EvaluationError("LLM returned no parameter scores.")
@@ -282,7 +358,7 @@ def _map_essay_parameter_scores(raw: list) -> list[EssayParameterScore]:
             score=_clamp(item.get("score", 0), 0, max_m),
             max_score=max_m,
             examiner_remark=str(item.get("examiner_remark", ""))[:120],
-            suggestions=_safe_string_list(
+            suggestions=_safe_str_list(
                 item.get("suggestions", []), max_len=100, max_items=1
             ),
         ))
@@ -292,7 +368,7 @@ def _map_essay_parameter_scores(raw: list) -> list[EssayParameterScore]:
 
 
 def _map_legacy_annotation_comments(raw: list) -> list[AnnotationComment]:
-    out = []
+    out: list[AnnotationComment] = []
     for item in raw:
         try:
             out.append(AnnotationComment(
@@ -307,6 +383,31 @@ def _map_legacy_annotation_comments(raw: list) -> list[AnnotationComment]:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _compute_grade(pct: float) -> str:
+    if pct >= 0.90: return "A+"
+    if pct >= 0.80: return "A"
+    if pct >= 0.70: return "B+"
+    if pct >= 0.60: return "B"
+    if pct >= 0.50: return "C"
+    if pct >= 0.40: return "D"
+    return "F"
+
+
+def _compute_grade_legacy(pct: float) -> str:
+    if pct >= 0.8: return "A"
+    if pct >= 0.6: return "B"
+    if pct >= 0.4: return "C"
+    return "D"
+
+
+def _compute_performance(pct: float) -> str:
+    if pct >= 0.90: return "Excellent"
+    if pct >= 0.75: return "Very Good"
+    if pct >= 0.60: return "Good"
+    if pct >= 0.45: return "Average"
+    return "Needs Improvement"
+
+
 def _require_string(data: dict, key: str) -> str:
     val = data.get(key, "")
     if not val:
@@ -314,10 +415,10 @@ def _require_string(data: dict, key: str) -> str:
     return str(val)[:600]
 
 
-def _safe_string_list(
+def _safe_str_list(
     raw: list,
-    max_len: int = 150,
-    max_items: int = 4,
+    max_len: int = 200,
+    max_items: int = 6,
 ) -> list[str]:
     return [str(s)[:max_len] for s in raw if s and str(s).strip()][:max_items]
 
@@ -330,4 +431,5 @@ def _clamp(v, lo: int, hi: int) -> int:
 
 
 def _norm_sentiment(v: str) -> str:
-    return v.lower() if v.lower() in {"positive", "neutral", "negative"} else "neutral"
+    v = str(v).lower()
+    return v if v in {"positive", "neutral", "negative"} else "neutral"
