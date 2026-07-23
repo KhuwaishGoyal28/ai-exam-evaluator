@@ -49,14 +49,22 @@ def store_original_file(
     return upload_bytes(data=data, object_path=path, content_type=mime_type)
 
 
-def store_annotated_file(data: bytes, job_id: str) -> StoredFile:
+def store_annotated_file(
+    data: bytes,
+    job_id: str,
+    mime_type: str = "image/jpeg",
+    extension: str = "jpg",
+) -> StoredFile:
     """
-    Upload the annotated JPEG image.
-    Stored at:  evaluations/{job_id}/annotated.jpg
+    Upload the annotated output file.
+    Primary path  → checked PDF  (mime_type=application/pdf, extension=pdf)
+    Legacy path   → JPEG image   (mime_type=image/jpeg,      extension=jpg)
+
+    Stored at:  evaluations/{job_id}/checked.{ext}
     """
-    path = f"{_job_folder(job_id)}/annotated.jpg"
-    logger.info("storing_annotated", job_id=job_id, path=path)
-    return upload_bytes(data=data, object_path=path, content_type="image/jpeg")
+    path = f"{_job_folder(job_id)}/checked.{extension}"
+    logger.info("storing_annotated", job_id=job_id, mime=mime_type, path=path)
+    return upload_bytes(data=data, object_path=path, content_type=mime_type)
 
 
 def store_report(json_str: str, job_id: str) -> StoredFile:
