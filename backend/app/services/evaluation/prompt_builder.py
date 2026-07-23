@@ -18,11 +18,15 @@ from app.utils.text_utils import truncate_text, sanitise_for_prompt
 # ── System prompts ────────────────────────────────────────────────────────────
 
 _STANDARD_SYSTEM = """\
-You are an experienced exam evaluator who checks papers across all levels: \
-school tests, board exams, entrance exams, and university assignments.
+You are an experienced exam evaluator checking handwritten student answer sheets.
 
-Score the student answer using the 5-parameter rubric below. \
-Adjust your expectations to the exam level provided — be age-appropriate and context-aware. \
+The text provided has been extracted via OCR from a scanned handwritten answer sheet.
+It contains ONLY the student's handwritten content — printed question text has been
+deliberately excluded. Any [EXAMINER: ...] tags in the text are pre-existing examiner
+marks already on the paper; treat them as context, not student content.
+
+Score the student answer using the 5-parameter rubric below.
+Adjust your expectations to the exam level provided — be age-appropriate and context-aware.
 Do NOT apply criteria from a different subject or level than specified.
 
 Scoring: 0–10 per parameter (integers only).
@@ -37,6 +41,11 @@ _ESSAY_SYSTEM = """\
 You are a senior essay examiner specialising in competitive examination essays \
 (UPSC, state PSC, and equivalent).
 
+The text provided has been extracted via OCR from a scanned handwritten essay answer sheet.
+It contains ONLY the student's handwritten content — printed headings and question text
+have been deliberately excluded. Any [EXAMINER: ...] tags are pre-existing marks on the
+paper; use them as context clues about essay quality but evaluate the student's own writing.
+
 Evaluate the essay using the 12-parameter rubric below. Each parameter has its own \
 maximum mark — the total is 100. Be strict and calibrated: a well-written, complete \
 essay that covers most parameters competently should score 65–72/100. \
@@ -49,9 +58,8 @@ For each parameter provide:
   - suggestions: zero or one actionable tip (≤ 90 chars).
 
 Also produce 4–5 "before_resubmit" checklist items — concrete, specific fixes the \
-student must address before resubmitting (e.g. fix a factual error, add a counter-view, \
-expand a specific example). These mirror the numbered boxes at the bottom of a \
-Roundtable IAS evaluation sheet.
+student must address before resubmitting. These mirror the numbered boxes at the bottom \
+of a Roundtable IAS evaluation sheet.
 
 Respond ONLY with a valid JSON object matching the exact schema. \
 No markdown, no prose outside the JSON.
@@ -65,9 +73,20 @@ def build_evaluation_prompt(
     exam_type: ExamType = ExamType.CUSTOM,
 ) -> tuple[str, str]:
     """Return (system_prompt, user_prompt) for the LLM."""
+    # Strip [EXAMINER: ...] tags from the student text before evaluation
+    # — they are context clues but not student content to be scored
+    clean_text = _strip_examiner_tags(extracted_text)
+    clean_paras = [_strip_examiner_tags(p) for p in paragraphs]
+
     if exam_type == ExamType.ESSAY:
-        return _build_essay_prompt(extracted_text, question, paragraphs)
-    return _build_standard_prompt(extracted_text, question, paragraphs, exam_type)
+        return _build_essay_prompt(clean_text, question, clean_paras)
+    return _build_standard_prompt(clean_text, question, clean_paras, exam_type)
+
+
+def _strip_examiner_tags(text: str) -> str:
+    """Remove [EXAMINER: ...] OCR tags from text — keep only student content."""
+    import re
+    return re.sub(r'\[EXAMINER:[^\]]*\]', '', text).strip()
 
 
 # ── Standard (5-param) ────────────────────────────────────────────────────────
@@ -86,12 +105,12 @@ def _build_standard_prompt(
 EXAM TYPE: {exam_type.value}
 CONTEXT: {exam_context[:200]}
 
-QUESTION: {safe_q}
+QUESTION / TOPIC: {safe_q}
 
-STUDENT ANSWER (excerpt):
+STUDENT'S HANDWRITTEN ANSWER (pen/pencil content only, printed text excluded):
 {safe_text}
 
-PARAGRAPHS:
+PARAGRAPHS (for annotation targeting):
 {_format_paragraph_list(paragraphs)}
 
 RUBRIC (0–10 each):
@@ -152,7 +171,7 @@ def _build_essay_prompt(
     user_prompt = f"""\
 ESSAY TOPIC / QUESTION: {safe_q}
 
-ESSAY TEXT:
+STUDENT'S HANDWRITTEN ESSAY (pen/pencil content only, printed text excluded):
 {safe_text}
 
 PARAGRAPHS (for annotation targeting):

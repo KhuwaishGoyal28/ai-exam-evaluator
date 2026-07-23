@@ -43,11 +43,24 @@ _MAX_IMAGE_WIDTH = 800
 _JPEG_QUALITY = 60
 
 _OCR_SYSTEM = (
-    "You are a precise OCR engine processing a handwritten exam answer sheet. "
-    "Transcribe EVERY word exactly as written, including spelling mistakes. "
-    "Preserve paragraph breaks with a blank line between paragraphs. "
-    "Do NOT correct spelling, grammar, or content. "
-    "Output only the transcribed text — no commentary, no markdown, no headers."
+    "You are an expert OCR engine specialised in reading handwritten exam answer sheets. "
+    "Your task is to transcribe ONLY the handwritten content — text written by hand "
+    "with pen or pencil by the student. "
+    "\n\n"
+    "STRICT RULES:\n"
+    "1. Transcribe ONLY handwritten pen or pencil text.\n"
+    "2. IGNORE all printed/typed/computer-generated text: "
+    "question text, headers, footers, page numbers, watermarks, "
+    "pre-printed labels, institution names, scan marks, or any text "
+    "that is clearly typeset/printed rather than handwritten.\n"
+    "3. Also transcribe handwritten examiner annotations if present: "
+    "margin comments, circled words, underlined phrases, ticks, crosses, "
+    "or any handwritten marks added by an examiner in red or blue ink. "
+    "Mark these with [EXAMINER: ...] so they are distinguished.\n"
+    "4. Preserve the student's exact spelling, grammar, and paragraph breaks.\n"
+    "5. Separate paragraphs with a blank line.\n"
+    "6. Output ONLY the transcribed text — no explanations, no markdown, "
+    "no commentary."
 )
 
 
@@ -62,7 +75,14 @@ async def extract_text_via_vision(image_bytes: bytes) -> str:
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         },
-        {"type": "text", "text": "Transcribe all text from this answer sheet page."},
+        {
+            "type": "text",
+            "text": (
+                "Transcribe ONLY the handwritten pen or pencil text from this "
+                "exam answer sheet. Ignore all printed/typed text. "
+                "Mark any examiner annotations with [EXAMINER: ...]."
+            ),
+        },
     ]
     return await _call_groq_vision(content)
 
@@ -99,9 +119,12 @@ async def extract_text_from_pdf(pdf_bytes: bytes) -> str:
             {
                 "type": "text",
                 "text": (
-                    f"This is page {page_num + 1} of {len(page_images)} of a "
-                    "handwritten exam answer sheet. "
-                    "Transcribe every word exactly as written."
+                    f"Page {page_num + 1} of {len(page_images)} — handwritten exam answer sheet.\n"
+                    "Transcribe ONLY handwritten pen or pencil text written by the student. "
+                    "Ignore all printed/typed text (question text, headers, watermarks, "
+                    "page numbers, pre-printed labels). "
+                    "If you see examiner handwritten marks (ticks, crosses, margin notes "
+                    "in red/blue), include them prefixed with [EXAMINER: ...]."
                 ),
             },
         ]
