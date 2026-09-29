@@ -1,5 +1,7 @@
 # EvalPro — Smart Exam Answer Evaluator
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Open-2ea44f?style=for-the-badge&logo=vercel)](https://ai-exam-evaluator-nine.vercel.app)
+
 Upload a photo or PDF of any handwritten or typed answer sheet and get back:
 
 - **Extracted text** — OCR from every page of the document
